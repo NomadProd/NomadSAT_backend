@@ -1,0 +1,206 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from models import User
+from schemas import NewUserData, UpdateUserData
+from Methods.auth import (
+    VALID_USER_ROLES,
+    get_db,
+    get_current_user,
+    normalize_role,
+    require_roles,
+)
+from Methods.security import get_password_hash
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.get("/all")
+def get_all_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["admin"]))
+):
+    users = db.query(User).all()
+
+    return [
+        {
+            "user_id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "surname": user.surname,
+            "role": user.role
+        }
+        for user in users
+    ]
+
+
+@router.get("/students")
+def get_students(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["admin", "teacher"]))
+):
+    students = db.query(User).filter(User.role == "student").all()
+
+    return [
+        {
+            "user_id": s.id,
+            "name": s.name,
+            "surname": s.surname
+        }
+        for s in students
+    ]
+
+
+@router.get("/teachers")
+def get_all_teachers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["admin", "teacher"]))
+):
+    users = db.query(User).filter(User.role == "teacher").all()
+
+    return [
+        {
+            "user_id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "surname": user.surname,
+            "role": user.role
+        }
+        for user in users
+    ]
+
+
+@router.get("/{user_id}")
+def get_user_by_id(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user.role == "student" and current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "surname": user.surname,
+        "role": user.role
+    }
+
+
+@router.post("/")
+def create_user(
+    user_data: NewUserData,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["admin"]))
+):
+    role = normalize_role(user_data.role)
+    if role not in VALID_USER_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    if current_user.role == "mentor" and role not in ["teacher", "student"]:
+        raise HTTPException(status_code=403, detail="Mentors can create only teachers or students")
+
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="User with this email already exists")
+
+    new_user = User(
+        email=user_data.email,
+        hashed_password=get_password_hash(user_data.password),
+        name=user_data.name,
+        surname=user_data.surname,
+        role=role
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return {
+        "message": "User created successfully",
+        "user_id": new_user.id,
+        "email": new_user.email,
+        "role": new_user.role
+    }
+
+
+@router.patch("/{user_id}")
+def update_user(
+    user_id: int,
+    user_data: UpdateUserData,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user.role == "student" and current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    if current_user.role == "teacher":
+        if user.role != "student":
+            raise HTTPException(status_code=403, detail="Teachers can edit only students")
+
+    if user_data.email is not None:
+        existing_email = db.query(User).filter(User.email == user_data.email, User.id != user_id).first()
+        if existing_email:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        user.email = user_data.email
+
+    if user_data.name is not None:
+        user.name = user_data.name
+
+    if user_data.surname is not None:
+        user.surname = user_data.surname
+
+    if user_data.password is not None:
+        user.hashed_password = get_password_hash(user_data.password)
+
+    if user_data.role is not None:
+        role = normalize_role(user_data.role)
+        if role not in VALID_USER_ROLES:
+            raise HTTPException(status_code=400, detail="Invalid role")
+
+        if current_user.role == "admin":
+            user.role = role
+        elif current_user.role == "mentor":
+            raise HTTPException(status_code=403, detail="Mentors cannot change user roles")
+        elif current_user.role == "teacher":
+            if role != "student":
+                raise HTTPException(status_code=403, detail="Teachers cannot change role to this value")
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "User updated successfully",
+        "user_id": user.id
+    }
+
+
+@router.delete("/{user_id}")
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["admin"]))
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can delete users")
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.delete(user)
+    db.commit()
+
+    return {"message": "User deleted successfully"}

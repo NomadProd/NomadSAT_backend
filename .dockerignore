@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+venv
+__pycache__
+**/__pycache__
+*.pyc
+**/*.pyc
+create_admin.py
+create_tables.py
