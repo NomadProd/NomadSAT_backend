@@ -19,7 +19,7 @@ router = APIRouter(tags=["auth"])
 
 COOKIE_NAME = env("AUTH_COOKIE_NAME", "access_token")
 COOKIE_DOMAIN = env("AUTH_COOKIE_DOMAIN")
-COOKIE_SECURE = env_bool("AUTH_COOKIE_SECURE", False)
+COOKIE_SECURE = env_bool("AUTH_COOKIE_SECURE", True)
 COOKIE_SAMESITE = env("AUTH_COOKIE_SAMESITE", "lax")
 COOKIE_MAX_AGE_SECONDS = ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
@@ -55,7 +55,14 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
         **cookie_options,
     )
 
-    return {"message": "Logged in successfully"}
+    return {
+        "message": "Logged in successfully",
+        "user_id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "surname": user.surname,
+        "role": user.role,
+    }
 
 
 @router.post("/auth/logout")
