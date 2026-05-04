@@ -66,8 +66,7 @@ def submit_or_update_attendance(
 @router.get("/sessions/{session_id}")
 def get_session_attendance(
     session_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not session_obj:
@@ -89,12 +88,8 @@ def get_session_attendance(
 @router.get("/students/{student_id}")
 def get_student_attendance_history(
     student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
-    if current_user.role == "student" and current_user.id != student_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")

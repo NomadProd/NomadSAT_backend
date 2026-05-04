@@ -156,8 +156,7 @@ def create_session(
 @router.get("/classes/{class_id}/sessions")
 def get_class_sessions(
     class_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     class_obj = db.query(Class).filter(Class.id == class_id).first()
     if not class_obj:
@@ -171,8 +170,7 @@ def get_class_sessions(
 @router.get("/sessions/{session_id}")
 def get_session_detail(
     session_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not session_obj:

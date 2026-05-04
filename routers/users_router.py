@@ -17,8 +17,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 @router.get("/all")
 def get_all_users(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    db: Session = Depends(get_db)
 ):
     users = db.query(User).all()
 
@@ -36,8 +35,7 @@ def get_all_users(
 
 @router.get("/students")
 def get_students(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    db: Session = Depends(get_db)
 ):
     students = db.query(User).filter(User.role == "student").all()
 
@@ -53,8 +51,7 @@ def get_students(
 
 @router.get("/teachers")
 def get_all_teachers(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    db: Session = Depends(get_db)
 ):
     users = db.query(User).filter(User.role == "teacher").all()
 
@@ -73,16 +70,12 @@ def get_all_teachers(
 @router.get("/{user_id}")
 def get_user_by_id(
     user_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db)
 ):
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
-    if current_user.role == "student" and current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
 
     return {
         "user_id": user.id,

@@ -88,8 +88,7 @@ def create_assignment_for_session(
 @router.get("/sessions/{session_id}")
 def get_assignments_by_session(
     session_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not session_obj:
@@ -117,8 +116,7 @@ def get_assignments_by_session(
 @router.get("/{assignment_id}")
 def get_assignment_detail(
     assignment_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:

@@ -1,7 +1,6 @@
 from datetime import time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, Session as ClassSession
@@ -202,21 +201,9 @@ def create_class(
 
 @router.get("/")
 def get_all_classes(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     query = db.query(Class)
-    if current_user.role == "teacher":
-        query = query.filter(
-            or_(
-                Class.verbal_teacher_id == current_user.id,
-                Class.math_teacher_id == current_user.id,
-            )
-        )
-    elif current_user.role == "student":
-        query = query.join(ClassEnrollment).filter(
-            ClassEnrollment.student_id == current_user.id
-        )
 
     classes = query.all()
 
@@ -246,14 +233,11 @@ def get_all_classes(
 @router.get("/{class_id}")
 def get_class_detail(
     class_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     class_obj = db.query(Class).filter(Class.id == class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
-
-    ensure_class_access(current_user, class_obj, db)
 
     verbal_teacher = db.query(User).filter(User.id == class_obj.verbal_teacher_id).first()
     math_teacher = db.query(User).filter(User.id == class_obj.math_teacher_id).first()
@@ -262,8 +246,6 @@ def get_class_detail(
         ClassEnrollment.class_id == class_id
     ).all()
     student_ids = [e.student_id for e in enrollments]
-    if current_user.role == "student":
-        student_ids = [current_user.id]
 
     students = db.query(User).filter(User.id.in_(student_ids)).all() if student_ids else []
     sessions = db.query(ClassSession).filter(ClassSession.class_id == class_id).all()
@@ -431,14 +413,11 @@ def remove_student_from_class(
 @router.get("/{class_id}/detail")
 def get_class_full_detail(
     class_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     class_obj = db.query(Class).filter(Class.id == class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
-
-    ensure_class_access(current_user, class_obj, db)
 
     verbal_teacher = db.query(User).filter(User.id == class_obj.verbal_teacher_id).first()
     math_teacher = db.query(User).filter(User.id == class_obj.math_teacher_id).first()
@@ -447,8 +426,6 @@ def get_class_full_detail(
         ClassEnrollment.class_id == class_id
     ).all()
     student_ids = [e.student_id for e in enrollments]
-    if current_user.role == "student":
-        student_ids = [current_user.id]
 
     students = db.query(User).filter(User.id.in_(student_ids)).all() if student_ids else []
     sessions = db.query(ClassSession).filter(ClassSession.class_id == class_id).all()
@@ -462,16 +439,6 @@ def get_class_full_detail(
     assignments = db.query(Assignment).filter(
         Assignment.session_id.in_(session_ids)
     ).all() if session_ids else []
-
-    if current_user.role == "student":
-        attendances = [
-            attendance for attendance in attendances
-            if attendance.student_id == current_user.id
-        ]
-        assignments = [
-            assignment for assignment in assignments
-            if assignment.student_id == current_user.id
-        ]
 
     return {
         "class": {

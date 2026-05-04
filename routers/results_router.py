@@ -288,8 +288,7 @@ async def create_mock_result(
 @router.get("/assignments/{assignment_id}/mock-results")
 def get_mock_results_by_assignment(
     assignment_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
@@ -302,8 +301,6 @@ def get_mock_results_by_assignment(
     class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
-
-    check_teacher_access(current_user, class_obj)
 
     results = db.query(MockResult).filter(
         MockResult.assignment_id == assignment_id
@@ -381,12 +378,8 @@ async def update_mock_result(
 @router.get("/students/{student_id}/mock-results")
 def get_student_mock_history(
     student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
-    if current_user.role == "student" and current_user.id != student_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -400,8 +393,6 @@ def get_student_mock_history(
             assignment,
             db,
         )
-        if not can_access_history_class(current_user, class_payload):
-            continue
         history.append({
             "result_id": r.id,
             "assignment_id": r.assignment_id,
@@ -425,12 +416,8 @@ def get_student_mock_history(
 @router.get("/students/{student_id}/results")
 def get_student_all_results(
     student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
-    if current_user.role == "student" and current_user.id != student_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -559,8 +546,7 @@ async def create_homework_result(
 @router.get("/assignments/{assignment_id}/homework-results")
 def get_homework_results_by_assignment(
     assignment_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
@@ -568,8 +554,6 @@ def get_homework_results_by_assignment(
 
     session_obj = db.query(ClassSession).filter(ClassSession.id == assignment.session_id).first()
     class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
-
-    check_teacher_access(current_user, class_obj)
 
     result = db.query(HomeworkResult).filter(HomeworkResult.assignment_id == assignment_id).first()
 
@@ -644,12 +628,8 @@ async def update_homework_result(
 @router.get("/students/{student_id}/homework-results")
 def get_student_homework_history(
     student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
-    if current_user.role == "student" and current_user.id != student_id:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -670,8 +650,6 @@ def get_student_homework_history(
             assignment,
             db,
         )
-        if not can_access_history_class(current_user, class_payload):
-            continue
         history.append({
             "result_id": r.id,
             "assignment_id": r.assignment_id,

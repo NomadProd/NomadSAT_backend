@@ -259,14 +259,11 @@ def delete_session_lesson_notes(
 @router.get("/classes/{class_id}/lesson-notes")
 def get_class_lesson_notes(
     class_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher", "student"]))
+    db: Session = Depends(get_db)
 ):
     class_obj = db.query(Class).filter(Class.id == class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
-
-    ensure_class_access(current_user, class_obj, db)
 
     sessions = (
         db.query(ClassSession)
