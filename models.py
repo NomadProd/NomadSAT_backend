@@ -30,7 +30,12 @@ class User(Base):
         back_populates="teacher"
     )
 
-    enrollments = relationship("ClassEnrollment", back_populates="student")
+    enrollments = relationship(
+        "ClassEnrollment",
+        back_populates="student",
+        cascade="all, delete-orphan",
+        passive_deletes=True
+    )
     attendances = relationship("Attendance", back_populates="student")
     assignments = relationship("Assignment", back_populates="student")
     mock_results = relationship("MockResult", back_populates="student")
@@ -42,8 +47,8 @@ class Class(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
 
-    verbal_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
-    math_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
+    verbal_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    math_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     verbal_teacher = relationship(
         "User",
@@ -59,7 +64,8 @@ class Class(Base):
     enrollments = relationship(
         "ClassEnrollment",
         back_populates="class_obj",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
+        passive_deletes=True
     )
     sessions = relationship(
         "Session",
@@ -71,8 +77,17 @@ class Class(Base):
 class ClassEnrollment(Base):
     __tablename__ = "class_enrollment"
 
-    class_id = Column(Integer, ForeignKey("classes.id"), primary_key=True)
-    student_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    class_id = Column(
+        Integer,
+        ForeignKey("classes.id", ondelete="CASCADE"),
+        primary_key=True
+    )
+
+    student_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True
+    )
 
     class_obj = relationship("Class", back_populates="enrollments")
     student = relationship("User", back_populates="enrollments")
