@@ -42,8 +42,8 @@ class Class(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
 
-    verbal_teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    math_teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    verbal_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
+    math_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
 
     verbal_teacher = relationship(
         "User",
