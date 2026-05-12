@@ -194,7 +194,7 @@ def write_session_lesson_notes(
     session_id: int,
     data: CreateSessionLessonNotesData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "teacher", "mentor"]))
 ):
     session_obj, class_obj = get_session_and_class(session_id, db)
     ensure_class_access(current_user, class_obj, db, write=True)
@@ -217,7 +217,7 @@ def update_session_lesson_notes(
     session_id: int,
     data: UpdateSessionLessonNotesData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "teacher", "mentor"]))
 ):
     session_obj, class_obj = get_session_and_class(session_id, db)
     ensure_class_access(current_user, class_obj, db, write=True)
@@ -280,7 +280,7 @@ def create_session_academic_plan_item(
     session_id: int,
     data: UpdateSessionAcademicPlanData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "teacher", "mentor"]))
 ):
     session_obj, class_obj = get_session_and_class(session_id, db)
     ensure_class_access(current_user, class_obj, db, write=True)
@@ -312,7 +312,7 @@ def update_session_academic_plan_item(
     plan_item_id: int,
     data: UpdateSessionAcademicPlanData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "teacher", "mentor"]))
 ):
     session_obj, class_obj = get_session_and_class(session_id, db)
     ensure_class_access(current_user, class_obj, db, write=True)
@@ -362,7 +362,7 @@ def update_session_academic_plan(
     session_id: int,
     data: UpdateSessionAcademicPlanData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "teacher", "mentor"]))
 ):
     session_obj, class_obj = get_session_and_class(session_id, db)
     ensure_class_access(current_user, class_obj, db, write=True)
