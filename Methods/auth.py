@@ -8,7 +8,7 @@ from models import User
 
 SECRET_KEY = env("JWT_SECRET_KEY", required=True)
 ALGORITHM = env("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = env_int("ACCESS_TOKEN_EXPIRE_MINUTES", 30)
+ACCESS_TOKEN_EXPIRE_MINUTES = env_int("ACCESS_TOKEN_EXPIRE_MINUTES", 150)
 AUTH_COOKIE_NAME = env("AUTH_COOKIE_NAME", "access_token")
 VALID_USER_ROLES = {"student", "teacher", "mentor", "admin"}
 
