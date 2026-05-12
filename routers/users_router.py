@@ -183,15 +183,21 @@ def update_user(
 def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
     user = db.query(User).filter(User.id == user_id).first()
 
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can delete users")
-
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user.id == user.id:
+        raise HTTPException(status_code=403, detail="You cannot delete yourself")
+
+    if current_user.role == "mentor" and user.role not in ["teacher", "student"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Mentors can delete only teachers or students"
+        )
 
     db.delete(user)
     db.commit()
