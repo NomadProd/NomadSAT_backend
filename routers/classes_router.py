@@ -3,7 +3,7 @@ from datetime import time, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, Session as ClassSession
+from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, Session as ClassSession
 from Methods.auth import get_db, require_roles
 from schemas import CreateClassData, UpdateClassData, EnrollmentData
 
@@ -72,6 +72,15 @@ def serialize_academic_plan_item(plan_item: AcademicPlanItem):
         "general_topic": plan_item.general_topic,
         "plan_text": plan_item.plan_text,
     }
+
+
+def calc_accuracy(correct, incorrect):
+    if correct is None or incorrect is None:
+        return None
+    total = correct + incorrect
+    if total == 0:
+        return None
+    return round(correct * 100 / total, 2)
 
 
 def serialize_session(session_obj: ClassSession, db: Session):
@@ -492,3 +501,47 @@ def get_class_full_detail(
             for a in assignments
         ]
     }
+
+
+@router.get("/{class_id}/homework-results")
+def get_class_homework_results(
+    class_id: int,
+    db: Session = Depends(get_db)
+):
+    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Class not found")
+
+    sessions = db.query(ClassSession).filter(ClassSession.class_id == class_id).all()
+    session_ids = [s.id for s in sessions]
+    if not session_ids:
+        return []
+
+    assignments = db.query(Assignment).filter(
+        Assignment.session_id.in_(session_ids)
+    ).all()
+    assignment_ids = [a.id for a in assignments]
+    if not assignment_ids:
+        return []
+
+    assignment_map = {a.id: a for a in assignments}
+    results = db.query(HomeworkResult).filter(
+        HomeworkResult.assignment_id.in_(assignment_ids)
+    ).all()
+
+    return [
+        {
+            "result_id": r.id,
+            "assignment_id": r.assignment_id,
+            "student_id": assignment_map[r.assignment_id].student_id,
+            "submitted": r.submitted,
+            "submitted_at": r.submitted_at,
+            "photo_link": r.photo_link,
+            "correct_total": r.correct_total,
+            "incorrect_total": r.incorrect_total,
+            "analysis": r.analysis,
+            "accuracy": calc_accuracy(r.correct_total, r.incorrect_total)
+        }
+        for r in results
+        if r.assignment_id in assignment_map
+    ]
