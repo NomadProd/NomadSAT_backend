@@ -240,6 +240,96 @@ def get_all_classes(
     return result
 
 
+@router.get("/student-home/details")
+def get_student_home_class_details(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["student"]))
+):
+    enrollments = db.query(ClassEnrollment).filter(
+        ClassEnrollment.student_id == current_user.id
+    ).all()
+    class_ids = [enrollment.class_id for enrollment in enrollments]
+    if not class_ids:
+        return []
+
+    classes = db.query(Class).filter(Class.id.in_(class_ids)).all()
+    result = []
+
+    for class_obj in classes:
+        verbal_teacher = db.query(User).filter(User.id == class_obj.verbal_teacher_id).first()
+        math_teacher = db.query(User).filter(User.id == class_obj.math_teacher_id).first()
+        sessions = db.query(ClassSession).filter(ClassSession.class_id == class_obj.id).all()
+        session_ids = [s.id for s in sessions]
+
+        created_mock_assignments = ensure_mock_assignments_for_class(db, class_obj.id)
+        if created_mock_assignments:
+            db.commit()
+
+        assignments = db.query(Assignment).filter(
+            Assignment.session_id.in_(session_ids),
+            Assignment.student_id == current_user.id
+        ).all() if session_ids else []
+
+        attendances = db.query(Attendance).filter(
+            Attendance.session_id.in_(session_ids),
+            Attendance.student_id == current_user.id
+        ).all() if session_ids else []
+
+        result.append({
+            "class": {
+                "class_id": class_obj.id,
+                "name": class_obj.name
+            },
+            "verbal_teacher": {
+                "user_id": verbal_teacher.id,
+                "name": verbal_teacher.name,
+                "surname": verbal_teacher.surname
+            } if verbal_teacher else None,
+            "math_teacher": {
+                "user_id": math_teacher.id,
+                "name": math_teacher.name,
+                "surname": math_teacher.surname
+            } if math_teacher else None,
+            "students": [
+                {
+                    "user_id": current_user.id,
+                    "name": current_user.name,
+                    "surname": current_user.surname
+                }
+            ],
+            "sessions": [
+                serialize_session(s, db)
+                for s in sessions
+            ],
+            "attendance": [
+                {
+                    "attendance_id": a.id,
+                    "session_id": a.session_id,
+                    "student_id": a.student_id,
+                    "status": a.status
+                }
+                for a in attendances
+            ],
+            "assignments": [
+                {
+                    "assignment_id": a.id,
+                    "session_id": a.session_id,
+                    "student_id": a.student_id,
+                    "slot_index": a.slot_index,
+                    "title": a.title,
+                    "instruction": a.instruction,
+                    "task_link": a.task_link,
+                    "due_date": a.due_date,
+                    "due_time": a.due_time,
+                    "photo_required": a.photo_required
+                }
+                for a in assignments
+            ]
+        })
+
+    return result
+
+
 @router.get("/{class_id}")
 def get_class_detail(
     class_id: int,
