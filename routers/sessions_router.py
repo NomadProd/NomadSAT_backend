@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from models import AcademicPlanItem, Class, Session as ClassSession, User
+from mock_assignments import ensure_mock_assignments_for_session
 from Methods.auth import get_db, require_roles
 from schemas import CreateSessionData, UpdateSessionData
 
@@ -144,6 +145,8 @@ def create_session(
     )
 
     db.add(new_session)
+    db.flush()
+    ensure_mock_assignments_for_session(db, new_session)
     db.commit()
     db.refresh(new_session)
 
@@ -231,6 +234,7 @@ def update_session(
     if field_was_sent(data, "lesson_notes"):
         session_obj.lesson_notes = data.lesson_notes
 
+    ensure_mock_assignments_for_session(db, session_obj)
     db.commit()
     db.refresh(session_obj)
 

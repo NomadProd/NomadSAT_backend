@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, Session as ClassSession
+from mock_assignments import ensure_mock_assignments_for_class
 from Methods.auth import get_db, require_roles
 from schemas import CreateClassData, UpdateClassData, EnrollmentData
 
@@ -382,12 +383,14 @@ def assign_student_to_class(
     )
 
     db.add(enrollment)
+    created_mock_assignments = ensure_mock_assignments_for_class(db, class_id)
     db.commit()
 
     return {
         "message": "Student assigned successfully",
         "class_id": class_id,
-        "student_id": data.student_id
+        "student_id": data.student_id,
+        "mock_assignments_created": created_mock_assignments,
     }
 
 
@@ -440,6 +443,10 @@ def get_class_full_detail(
     sessions = db.query(ClassSession).filter(ClassSession.class_id == class_id).all()
 
     session_ids = [s.id for s in sessions]
+
+    created_mock_assignments = ensure_mock_assignments_for_class(db, class_id)
+    if created_mock_assignments:
+        db.commit()
 
     attendances = db.query(Attendance).filter(
         Attendance.session_id.in_(session_ids)
