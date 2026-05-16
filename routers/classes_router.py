@@ -3,7 +3,7 @@ from datetime import time, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, Session as ClassSession
+from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, MockResult, Session as ClassSession
 from mock_assignments import ensure_mock_assignments_for_class
 from Methods.auth import get_db, require_roles
 from schemas import CreateClassData, UpdateClassData, EnrollmentData
@@ -551,4 +551,47 @@ def get_class_homework_results(
         }
         for r in results
         if r.assignment_id in assignment_map
+    ]
+
+
+@router.get("/{class_id}/mock-results")
+def get_class_mock_results(
+    class_id: int,
+    db: Session = Depends(get_db)
+):
+    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Class not found")
+
+    sessions = db.query(ClassSession).filter(ClassSession.class_id == class_id).all()
+    session_ids = [s.id for s in sessions]
+    if not session_ids:
+        return []
+
+    assignments = db.query(Assignment).filter(
+        Assignment.session_id.in_(session_ids)
+    ).all()
+    assignment_ids = [a.id for a in assignments]
+    if not assignment_ids:
+        return []
+
+    results = db.query(MockResult).filter(
+        MockResult.assignment_id.in_(assignment_ids)
+    ).all()
+
+    return [
+        {
+            "result_id": r.id,
+            "assignment_id": r.assignment_id,
+            "student_id": r.student_id,
+            "submitted": r.submitted,
+            "total_points": r.total_points,
+            "verbal_points": r.verbal_points,
+            "math_points": r.math_points,
+            "verbal_incorrect": r.verbal_incorrect,
+            "math_incorrect": r.math_incorrect,
+            "weak_areas": r.weak_areas,
+            "photo_link": r.photo_link
+        }
+        for r in results
     ]
