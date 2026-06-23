@@ -545,6 +545,13 @@ def get_class_full_detail(
     assignments = db.query(Assignment).filter(
         Assignment.session_id.in_(session_ids)
     ).all() if session_ids else []
+    assignment_ids = [a.id for a in assignments]
+    homework_result_count = db.query(HomeworkResult).filter(
+        HomeworkResult.assignment_id.in_(assignment_ids)
+    ).count() if assignment_ids else 0
+    mock_result_count = db.query(MockResult).filter(
+        MockResult.assignment_id.in_(assignment_ids)
+    ).count() if assignment_ids else 0
 
     return {
         "class": {
@@ -596,7 +603,9 @@ def get_class_full_detail(
                 "photo_required": a.photo_required
             }
             for a in assignments
-        ]
+        ],
+        "homework_result_count": homework_result_count,
+        "mock_result_count": mock_result_count
     }
 
 
