@@ -21,6 +21,7 @@ app.add_middleware(
         "CORS_ORIGINS",
         "https://turansat.com,https://www.turansat.com,http://localhost:55555",
     ),
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
