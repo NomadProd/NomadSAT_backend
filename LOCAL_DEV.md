@@ -80,7 +80,7 @@ AUTH_COOKIE_SECURE=false
 AUTH_COOKIE_DOMAIN=
 ```
 
-`CORS_ORIGINS` can list production URLs only. The backend also allows any `http://localhost:*` origin automatically during development.
+`CORS_ORIGINS` can list production URLs only. The backend also allows any `http://localhost:*` or private LAN IP (`192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`) origin automatically during development.
 
 ### Run the backend
 
@@ -149,6 +149,7 @@ The app uses **HTTP-only cookies**. The browser sends credentials to the backend
 
 | Symptom | Fix |
 |---------|-----|
+| `Failed to fetch, uri=http://192.168.x.x:8000/...` on phone | Start backend with `--host 0.0.0.0` (use `./scripts/dev-backend.sh`). Default `uvicorn --port 8000` binds only to `127.0.0.1` and is unreachable from other devices. |
 | `Failed to fetch, uri=https://api.turansat.com/...` | Frontend not on localhost, or you passed a production `API_BASE_URL`. On localhost it should auto-detect `http://localhost:8000`. |
 | CORS error in browser | Restart backend after changing `.env`. Any `http://localhost:<port>` origin is allowed by default. |
 | Login works, then `/auth/me` fails | Set `AUTH_COOKIE_SECURE=false` in backend `.env` for HTTP localhost. |
