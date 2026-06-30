@@ -18,7 +18,7 @@ def load_env_file(path: Path = BASE_DIR / ".env") -> None:
         key = key.strip().lstrip("\ufeff")
         value = value.strip().strip('"').strip("'")
         if key:
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
 
 
 load_env_file()
