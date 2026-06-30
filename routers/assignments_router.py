@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from dependencies.auth import AuthUser, get_current_user
+from dependencies.filters import assignments_query, sessions_query
 from models import Assignment, Session as ClassSession, Class, User, ClassEnrollment
 from Methods.auth import get_db, require_roles
 from schemas import CreateAssignmentData, UpdateAssignmentData
@@ -88,13 +90,22 @@ def create_assignment_for_session(
 @router.get("/sessions/{session_id}")
 def get_assignments_by_session(
     session_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    session_obj = (
+        sessions_query(db, current_user)
+        .filter(ClassSession.id == session_id)
+        .first()
+    )
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    assignments = db.query(Assignment).filter(Assignment.session_id == session_id).all()
+    assignments = (
+        assignments_query(db, current_user)
+        .filter(Assignment.session_id == session_id)
+        .all()
+    )
 
     return [
         {
@@ -112,28 +123,6 @@ def get_assignments_by_session(
         for a in assignments
     ]
 
-
-@router.get("/{assignment_id}")
-def get_assignment_detail(
-    assignment_id: int,
-    db: Session = Depends(get_db)
-):
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    return {
-        "assignment_id": assignment.id,
-        "session_id": assignment.session_id,
-        "student_id": assignment.student_id,
-        "slot_index": assignment.slot_index,
-        "title": assignment.title,
-        "instruction": assignment.instruction,
-        "task_link": assignment.task_link,
-        "due_date": assignment.due_date,
-        "due_time": assignment.due_time,
-        "photo_required": assignment.photo_required,
-    }
 
 
 @router.patch("/{assignment_id}")

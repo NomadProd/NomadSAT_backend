@@ -15,6 +15,8 @@ from models import (
     Class,
     ClassEnrollment
 )
+from dependencies.auth import AuthUser, get_current_user
+from dependencies.filters import assignments_query, homework_results_query
 from Methods.auth import get_db, require_roles
 from schemas import (
     CreateMockResultData,
@@ -546,16 +548,22 @@ async def create_homework_result(
 @router.get("/assignments/{assignment_id}/homework-results")
 def get_homework_results_by_assignment(
     assignment_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    assignment = (
+        assignments_query(db, current_user)
+        .filter(Assignment.id == assignment_id)
+        .first()
+    )
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    session_obj = db.query(ClassSession).filter(ClassSession.id == assignment.session_id).first()
-    class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
-
-    result = db.query(HomeworkResult).filter(HomeworkResult.assignment_id == assignment_id).first()
+    result = (
+        homework_results_query(db, current_user)
+        .filter(HomeworkResult.assignment_id == assignment_id)
+        .first()
+    )
 
     if not result:
         return []
@@ -628,19 +636,31 @@ async def update_homework_result(
 @router.get("/students/{student_id}/homework-results")
 def get_student_homework_history(
     student_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    if current_user.role == "student" and current_user.id != student_id:
+        raise HTTPException(status_code=404, detail="Student not found")
+
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    assignments = db.query(Assignment).filter(Assignment.student_id == student_id).all()
-    assignment_ids = [a.id for a in assignments]
+    assignments = (
+        assignments_query(db, current_user)
+        .filter(Assignment.student_id == student_id)
+        .all()
+    )
+    assignment_ids = [assignment.id for assignment in assignments]
 
     if not assignment_ids:
         return []
 
-    results = db.query(HomeworkResult).filter(HomeworkResult.assignment_id.in_(assignment_ids)).all()
+    results = (
+        homework_results_query(db, current_user)
+        .filter(HomeworkResult.assignment_id.in_(assignment_ids))
+        .all()
+    )
     assignment_map = {a.id: a for a in assignments}
 
     history = []

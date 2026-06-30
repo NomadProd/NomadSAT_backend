@@ -3,6 +3,8 @@ from datetime import time, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from dependencies.auth import AuthUser, get_current_user, require_admin, require_staff
+from dependencies.filters import classes_query, sessions_query, homework_results_query
 from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, MockResult, Session as ClassSession
 from mock_assignments import ensure_mock_assignments_for_class
 from Methods.auth import get_db, require_roles
@@ -209,36 +211,6 @@ def create_class(
     }
 
 
-@router.get("/")
-def get_all_classes(
-    db: Session = Depends(get_db)
-):
-    query = db.query(Class)
-
-    classes = query.all()
-
-    result = []
-
-    for c in classes:
-        verbal_teacher = db.query(User).filter(User.id == c.verbal_teacher_id).first()
-        math_teacher = db.query(User).filter(User.id == c.math_teacher_id).first()
-
-        result.append({
-            "class_id": c.id,
-            "class_name": c.name,
-
-            "verbal_teacher_id": c.verbal_teacher_id,
-            "math_teacher_id": c.math_teacher_id,
-
-            "verbal_teacher_name": verbal_teacher.name if verbal_teacher else None,
-            "verbal_teacher_surname": verbal_teacher.surname if verbal_teacher else None,
-
-            "math_teacher_name": math_teacher.name if math_teacher else None,
-            "math_teacher_surname": math_teacher.surname if math_teacher else None,
-        })
-
-    return result
-
 
 @router.get("/student-home/details")
 def get_student_home_class_details(
@@ -330,53 +302,6 @@ def get_student_home_class_details(
     return result
 
 
-@router.get("/{class_id}")
-def get_class_detail(
-    class_id: int,
-    db: Session = Depends(get_db)
-):
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
-    if not class_obj:
-        raise HTTPException(status_code=404, detail="Class not found")
-
-    verbal_teacher = db.query(User).filter(User.id == class_obj.verbal_teacher_id).first()
-    math_teacher = db.query(User).filter(User.id == class_obj.math_teacher_id).first()
-
-    enrollments = db.query(ClassEnrollment).filter(
-        ClassEnrollment.class_id == class_id
-    ).all()
-    student_ids = [e.student_id for e in enrollments]
-
-    students = db.query(User).filter(User.id.in_(student_ids)).all() if student_ids else []
-    sessions = db.query(ClassSession).filter(ClassSession.class_id == class_id).all()
-
-    return {
-        "class_id": class_obj.id,
-        "class_name": class_obj.name,
-        "verbal_teacher": {
-            "user_id": verbal_teacher.id,
-            "name": verbal_teacher.name,
-            "surname": verbal_teacher.surname
-        } if verbal_teacher else None,
-        "math_teacher": {
-            "user_id": math_teacher.id,
-            "name": math_teacher.name,
-            "surname": math_teacher.surname
-        } if math_teacher else None,
-        "students": [
-            {
-                "user_id": s.id,
-                "name": s.name,
-                "surname": s.surname
-            }
-            for s in students
-        ],
-        "sessions": [
-            serialize_session(session, db)
-            for session in sessions
-        ]
-    }
-
 
 @router.patch("/{class_id}")
 def update_class(
@@ -422,25 +347,6 @@ def update_class(
     }
 
 
-@router.delete("/{class_id}")
-def delete_class(
-    class_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
-):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can delete classes")
-
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
-    if not class_obj:
-        raise HTTPException(status_code=404, detail="Class not found")
-
-    db.delete(class_obj)
-    db.commit()
-
-    return {"message": "Class deleted successfully"}
-
-
 @router.post("/{class_id}/students")
 def assign_student_to_class(
     class_id: int,
@@ -484,40 +390,13 @@ def assign_student_to_class(
     }
 
 
-@router.delete("/{class_id}/students/{student_id}")
-def remove_student_from_class(
-    class_id: int,
-    student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
-):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can remove students")
-
-    enrollment = db.query(ClassEnrollment).filter(
-        ClassEnrollment.class_id == class_id,
-        ClassEnrollment.student_id == student_id
-    ).first()
-
-    if not enrollment:
-        raise HTTPException(status_code=404, detail="Enrollment not found")
-
-    db.delete(enrollment)
-    db.commit()
-
-    return {
-        "message": "Student removed successfully",
-        "class_id": class_id,
-        "student_id": student_id
-    }
-
-
 @router.get("/{class_id}/detail")
 def get_class_full_detail(
     class_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    class_obj = classes_query(db, current_user).filter(Class.id == class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
@@ -612,9 +491,10 @@ def get_class_full_detail(
 @router.get("/{class_id}/homework-results")
 def get_class_homework_results(
     class_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    class_obj = classes_query(db, current_user).filter(Class.id == class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
@@ -631,7 +511,7 @@ def get_class_homework_results(
         return []
 
     assignment_map = {a.id: a for a in assignments}
-    results = db.query(HomeworkResult).filter(
+    results = homework_results_query(db, current_user).filter(
         HomeworkResult.assignment_id.in_(assignment_ids)
     ).all()
 
@@ -656,9 +536,10 @@ def get_class_homework_results(
 @router.get("/{class_id}/mock-results")
 def get_class_mock_results(
     class_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    class_obj = classes_query(db, current_user).filter(Class.id == class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 

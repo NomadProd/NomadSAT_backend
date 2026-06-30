@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from dependencies.auth import AuthUser, get_current_user, require_admin, require_staff
 from models import User
 from schemas import NewUserData, UpdateUserData
 from Methods.auth import (
@@ -15,27 +16,11 @@ from Methods.security import get_password_hash
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("/all")
-def get_all_users(
-    db: Session = Depends(get_db)
-):
-    users = db.query(User).all()
-
-    return [
-        {
-            "user_id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "surname": user.surname,
-            "role": user.role
-        }
-        for user in users
-    ]
-
 
 @router.get("/students")
 def get_students(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_staff),
 ):
     students = db.query(User).filter(User.role == "student").all()
 
@@ -51,7 +36,8 @@ def get_students(
 
 @router.get("/teachers")
 def get_all_teachers(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_staff),
 ):
     users = db.query(User).filter(User.role == "teacher").all()
 
@@ -66,24 +52,6 @@ def get_all_teachers(
         for user in users
     ]
 
-
-@router.get("/{user_id}")
-def get_user_by_id(
-    user_id: int,
-    db: Session = Depends(get_db)
-):
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return {
-        "user_id": user.id,
-        "email": user.email,
-        "name": user.name,
-        "surname": user.surname,
-        "role": user.role
-    }
 
 
 @router.post("/")
@@ -179,27 +147,3 @@ def update_user(
     }
 
 
-@router.delete("/{user_id}")
-def delete_user(
-    user_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "mentor"]))
-):
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if current_user.id == user.id:
-        raise HTTPException(status_code=403, detail="You cannot delete yourself")
-
-    if current_user.role == "mentor" and user.role not in ["teacher", "student"]:
-        raise HTTPException(
-            status_code=403,
-            detail="Mentors can delete only teachers or students"
-        )
-
-    db.delete(user)
-    db.commit()
-
-    return {"message": "User deleted successfully"}

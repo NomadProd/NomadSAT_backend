@@ -203,7 +203,37 @@ class HomeworkResult(Base):
     incorrect_total = Column(Integer, nullable=True)
     analysis = Column(Text, nullable=True)
 
+    returned_at = Column(DateTime, nullable=True)
+    returned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    return_reason = Column(Text, nullable=True)
+
     assignment = relationship("Assignment", back_populates="homework_result")
+    files = relationship(
+        "HomeworkFile",
+        back_populates="result",
+        cascade="all, delete-orphan",
+        order_by="HomeworkFile.uploaded_at",
+    )
+
+
+class HomeworkFile(Base):
+    __tablename__ = "homework_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    result_id = Column(
+        Integer,
+        ForeignKey("homework_results.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    url = Column(Text, nullable=False)
+    public_id = Column(Text, nullable=True)
+    filename = Column(Text, nullable=False)
+    content_type = Column(Text, nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    uploaded_at = Column(DateTime, nullable=False)
+
+    result = relationship("HomeworkResult", back_populates="files")
 
 
 class MockResult(Base):

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from dependencies.auth import AuthUser, get_current_user
+from dependencies.filters import classes_query, sessions_query
 from models import AcademicPlanItem, Class, Session as ClassSession, User
 from mock_assignments import ensure_mock_assignments_for_session
 from Methods.auth import get_db, require_roles
@@ -159,27 +161,21 @@ def create_session(
 @router.get("/classes/{class_id}/sessions")
 def get_class_sessions(
     class_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    class_obj = classes_query(db, current_user).filter(Class.id == class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
-    sessions = db.query(ClassSession).filter(ClassSession.class_id == class_id).all()
+    sessions = (
+        sessions_query(db, current_user)
+        .filter(ClassSession.class_id == class_id)
+        .all()
+    )
 
     return [serialize_session(session_obj, db) for session_obj in sessions]
 
-
-@router.get("/sessions/{session_id}")
-def get_session_detail(
-    session_id: int,
-    db: Session = Depends(get_db)
-):
-    session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
-    if not session_obj:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    return serialize_session(session_obj, db)
 
 
 @router.patch("/sessions/{session_id}")

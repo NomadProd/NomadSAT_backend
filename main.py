@@ -11,8 +11,9 @@ from routers import (
     attendance_router,
     assignments_router,
     results_router,
-    lesson_notes_router
+    lesson_notes_router,
 )
+from routes import assignments, attendance, classes, homework_files, homework_results, sessions, users
 
 app = FastAPI()
 
@@ -43,6 +44,13 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(auth_router.router)
+app.include_router(users.router)
+app.include_router(classes.router)
+app.include_router(sessions.router)
+app.include_router(assignments.router)
+app.include_router(attendance.router)
+app.include_router(homework_results.router)
+app.include_router(homework_files.router)
 app.include_router(users_router.router)
 app.include_router(classes_router.router)
 app.include_router(sessions_router.router)

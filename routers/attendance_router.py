@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from dependencies.auth import AuthUser, get_current_user, require_staff
+from dependencies.filters import attendance_query, sessions_query
 from models import Attendance, Session as ClassSession, User, Class, ClassEnrollment
 from Methods.auth import get_db, require_roles
 from schemas import AttendanceBulkData
@@ -66,13 +68,22 @@ def submit_or_update_attendance(
 @router.get("/sessions/{session_id}")
 def get_session_attendance(
     session_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    session_obj = (
+        sessions_query(db, current_user)
+        .filter(ClassSession.id == session_id)
+        .first()
+    )
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    records = db.query(Attendance).filter(Attendance.session_id == session_id).all()
+    records = (
+        attendance_query(db, current_user)
+        .filter(Attendance.session_id == session_id)
+        .all()
+    )
 
     return [
         {
@@ -88,13 +99,21 @@ def get_session_attendance(
 @router.get("/students/{student_id}")
 def get_student_attendance_history(
     student_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    if current_user.role == "student" and current_user.id != student_id:
+        raise HTTPException(status_code=404, detail="Student not found")
+
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    records = db.query(Attendance).filter(Attendance.student_id == student_id).all()
+    records = (
+        attendance_query(db, current_user)
+        .filter(Attendance.student_id == student_id)
+        .all()
+    )
 
     return [
         {
