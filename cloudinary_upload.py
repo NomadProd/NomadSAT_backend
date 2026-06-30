@@ -2,13 +2,19 @@ import hashlib
 import http.client
 import json
 import mimetypes
+import ssl
 import time
 import uuid
 from urllib.parse import quote, urlparse
 
+import certifi
 from fastapi import HTTPException, UploadFile
 
 from config import env
+
+
+def _https_context() -> ssl.SSLContext:
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _multipart_body(fields: dict[str, str], file: UploadFile, data: bytes) -> tuple[bytes, str]:
@@ -88,7 +94,11 @@ async def upload_homework_file(file: UploadFile, *, assignment_id: int) -> str:
     }
     body, boundary = _multipart_body(fields, file, data)
 
-    conn = http.client.HTTPSConnection("api.cloudinary.com", timeout=30)
+    conn = http.client.HTTPSConnection(
+        "api.cloudinary.com",
+        timeout=30,
+        context=_https_context(),
+    )
     try:
         conn.request(
             "POST",

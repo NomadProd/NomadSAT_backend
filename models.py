@@ -1,5 +1,5 @@
 from sqlalchemy import Column, DateTime, Integer, String, ForeignKey, Boolean, Date, Time, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -206,34 +206,9 @@ class HomeworkResult(Base):
     returned_at = Column(DateTime, nullable=True)
     returned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     return_reason = Column(Text, nullable=True)
+    attachments = Column(JSONB, nullable=False, server_default="[]")
 
     assignment = relationship("Assignment", back_populates="homework_result")
-    files = relationship(
-        "HomeworkFile",
-        back_populates="result",
-        cascade="all, delete-orphan",
-        order_by="HomeworkFile.uploaded_at",
-    )
-
-
-class HomeworkFile(Base):
-    __tablename__ = "homework_files"
-
-    id = Column(Integer, primary_key=True, index=True)
-    result_id = Column(
-        Integer,
-        ForeignKey("homework_results.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    url = Column(Text, nullable=False)
-    public_id = Column(Text, nullable=True)
-    filename = Column(Text, nullable=False)
-    content_type = Column(Text, nullable=False)
-    size_bytes = Column(Integer, nullable=False)
-    uploaded_at = Column(DateTime, nullable=False)
-
-    result = relationship("HomeworkResult", back_populates="files")
 
 
 class MockResult(Base):
@@ -254,6 +229,7 @@ class MockResult(Base):
 
     weak_areas = Column(Text, nullable=True)
     photo_link = Column(String, nullable=True)
+    attachments = Column(JSONB, nullable=False, server_default="[]")
 
     assignment = relationship("Assignment", back_populates="mock_result")
     student = relationship("User", back_populates="mock_results")

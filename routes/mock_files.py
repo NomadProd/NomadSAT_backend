@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from Methods.auth import get_db, get_current_user, normalize_role
-from models import HomeworkResult, User
+from models import MockResult, User
 from services.attachments import (
     find_attachment_by_id,
     first_image_url,
@@ -15,23 +15,34 @@ from services.attachments import (
 )
 from services.cloudinary_service import delete_file
 
-router = APIRouter(tags=["homework-files"])
+router = APIRouter(tags=["mock-files"])
 logger = logging.getLogger(__name__)
 
 
-@router.delete("/homework-files/{file_id}", status_code=204)
-def delete_homework_file(
+@router.delete("/mock-files/{file_id}", status_code=204)
+def delete_mock_file(
     file_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if normalize_role(current_user.role) != "admin":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-
-    results = db.query(HomeworkResult).all()
+    results = db.query(MockResult).all()
     result, index, row = find_attachment_by_id(results, file_id)
     if result is None or index is None or row is None:
-        raise HTTPException(status_code=404, detail="Homework file not found")
+        raise HTTPException(status_code=404, detail="Mock file not found")
+
+    role = normalize_role(current_user.role)
+    if role == "admin":
+        pass
+    elif role == "student":
+        if current_user.id != result.student_id:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        if result.submitted:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot delete files from a submitted mock result",
+            )
+    else:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
 
     deleted_url = row.get("url")
     if row.get("public_id") is not None:

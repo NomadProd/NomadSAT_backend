@@ -8,6 +8,7 @@ from dependencies.filters import classes_query, sessions_query, homework_results
 from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, MockResult, Session as ClassSession
 from mock_assignments import ensure_mock_assignments_for_class
 from Methods.auth import get_db, require_roles
+from routes.mock_results import serialize_mock_result_list_item
 from schemas import CreateClassData, UpdateClassData, EnrollmentData
 
 router = APIRouter(prefix="/classes", tags=["classes"])
@@ -560,18 +561,6 @@ def get_class_mock_results(
     ).all()
 
     return [
-        {
-            "result_id": r.id,
-            "assignment_id": r.assignment_id,
-            "student_id": r.student_id,
-            "submitted": r.submitted,
-            "total_points": r.total_points,
-            "verbal_points": r.verbal_points,
-            "math_points": r.math_points,
-            "verbal_incorrect": r.verbal_incorrect,
-            "math_incorrect": r.math_incorrect,
-            "weak_areas": r.weak_areas,
-            "photo_link": r.photo_link
-        }
+        serialize_mock_result_list_item(r)
         for r in results
     ]

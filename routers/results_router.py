@@ -18,6 +18,7 @@ from models import (
 from dependencies.auth import AuthUser, get_current_user
 from dependencies.filters import assignments_query, homework_results_query
 from Methods.auth import get_db, require_roles
+from routes.mock_results import serialize_mock_result_list_item
 from schemas import (
     CreateMockResultData,
     UpdateMockResultData
@@ -171,15 +172,11 @@ async def parse_homework_payload(request: Request, assignment_id: int | None = N
     }
 
 
-async def parse_mock_payload(request: Request, assignment_id: int | None = None):
+async def parse_mock_payload(request: Request):
     content_type = request.headers.get("content-type", "")
-    uploaded_file = None
 
     if content_type.startswith("multipart/form-data"):
         form = await request.form()
-        uploaded_file = form.get("photo") or form.get("file")
-        if uploaded_file is not None and not isinstance(uploaded_file, UploadFile):
-            uploaded_file = None
 
         student_id = parse_optional_int(form.get("student_id"))
         submitted = parse_optional_bool(form.get("submitted"))
@@ -199,11 +196,6 @@ async def parse_mock_payload(request: Request, assignment_id: int | None = None)
         math_incorrect = parse_optional_int(body.get("math_incorrect"))
         weak_areas = body.get("weak_areas")
         photo_link = body.get("photo_link")
-
-    if uploaded_file is not None:
-        if assignment_id is None:
-            assignment_id = 0
-        photo_link = await upload_homework_file(uploaded_file, assignment_id=assignment_id)
 
     return {
         "student_id": student_id,
@@ -234,7 +226,7 @@ async def create_mock_result(
     if session_obj.session_type != "mock":
         raise HTTPException(status_code=400, detail="This assignment is not for mock results")
 
-    payload = await parse_mock_payload(request, assignment_id=assignment_id)
+    payload = await parse_mock_payload(request)
     student_id = payload.get("student_id")
     if student_id is None:
         raise HTTPException(status_code=400, detail="student_id is required")
@@ -309,19 +301,7 @@ def get_mock_results_by_assignment(
     ).all()
 
     return [
-        {
-            "result_id": r.id,
-            "assignment_id": r.assignment_id,
-            "student_id": r.student_id,
-            "submitted": r.submitted,
-            "total_points": r.total_points,
-            "verbal_points": r.verbal_points,
-            "math_points": r.math_points,
-            "verbal_incorrect": r.verbal_incorrect,
-            "math_incorrect": r.math_incorrect,
-            "weak_areas": r.weak_areas,
-            "photo_link": r.photo_link
-        }
+        serialize_mock_result_list_item(r)
         for r in results
     ]
 
@@ -346,7 +326,7 @@ async def update_mock_result(
     if current_user.role == "student" and current_user.id != result.student_id:
         raise HTTPException(status_code=403, detail="Students can edit only their own results")
 
-    payload = await parse_mock_payload(request, assignment_id=result.assignment_id)
+    payload = await parse_mock_payload(request)
 
     if payload["submitted"] is not None:
         result.submitted = payload["submitted"]
@@ -395,22 +375,14 @@ def get_student_mock_history(
             assignment,
             db,
         )
-        history.append({
-            "result_id": r.id,
-            "assignment_id": r.assignment_id,
-            "student_id": r.student_id,
-            "submitted": r.submitted,
-            "total_points": r.total_points,
-            "verbal_points": r.verbal_points,
-            "math_points": r.math_points,
-            "verbal_incorrect": r.verbal_incorrect,
-            "math_incorrect": r.math_incorrect,
-            "weak_areas": r.weak_areas,
-            "photo_link": r.photo_link,
-            "assignment": assignment_payload,
-            "session": session_payload,
-            "class": class_payload,
-        })
+        history.append(
+            serialize_mock_result_list_item(r)
+            | {
+                "assignment": assignment_payload,
+                "session": session_payload,
+                "class": class_payload,
+            }
+        )
 
     return history
 
@@ -457,18 +429,7 @@ def get_student_all_results(
             for r in homework_results
         ],
         "mock_results": [
-            {
-                "result_id": r.id,
-                "assignment_id": r.assignment_id,
-                "submitted": r.submitted,
-                "total_points": r.total_points,
-                "verbal_points": r.verbal_points,
-                "math_points": r.math_points,
-                "verbal_incorrect": r.verbal_incorrect,
-                "math_incorrect": r.math_incorrect,
-                "weak_areas": r.weak_areas,
-                "photo_link": r.photo_link
-            }
+            serialize_mock_result_list_item(r)
             for r in mock_results
         ],
         "attendance": [

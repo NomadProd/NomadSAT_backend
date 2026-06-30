@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
 from dependencies.auth import AuthUser, get_current_user, normalize_role
@@ -15,14 +16,30 @@ from Methods.auth import (
 )
 from models import (
     Assignment,
-    Class,
-    HomeworkFile,
     HomeworkResult,
-    Session as ClassSession,
     User,
 )
-from schemas.homework_result import HomeworkFileSchema, HomeworkResultSchema, ReturnHomeworkRequest
-from services.cloudinary_service import delete_file, upload_file
+from schemas.homework_result import (
+    HomeworkFileSchema,
+    HomeworkResultSchema,
+    HomeworkUploadResponse,
+    ReturnHomeworkRequest,
+)
+from services.attachments import (
+    append_uploads,
+    first_image_url,
+    first_image_url_from_uploads,
+    parse_uploaded_at,
+    read_attachments,
+    replace_with_uploads,
+    write_attachments,
+)
+from services.cloudinary_service import (
+    delete_attachments_best_effort,
+    delete_file,
+    rollback_uploads,
+    upload_file,
+)
 
 router = APIRouter(tags=["homework-results"])
 
@@ -36,86 +53,14 @@ ALLOWED_CONTENT_TYPES = {
     "image/heic",
     "application/pdf",
 }
-ALLOWED_CONTENT_TYPES_DISPLAY = ["image/*", "application/pdf"]
 
 
-def validation_error(status_code: int, payload: dict) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content=payload)
+def validation_error(payload: dict) -> JSONResponse:
+    return JSONResponse(status_code=422, content=payload)
 
 
 def conflict_error(payload: dict) -> JSONResponse:
     return JSONResponse(status_code=409, content=payload)
-
-
-def first_image_url(uploaded_files: list[dict]) -> str | None:
-    for uploaded in uploaded_files:
-        if uploaded["content_type"].startswith("image/"):
-            return uploaded["url"]
-    return None
-
-
-def replace_result_files(
-    db: Session,
-    result_id: int,
-    uploaded_cloudinary: list[dict],
-) -> list[HomeworkFile]:
-    old_files = (
-        db.query(HomeworkFile)
-        .filter(HomeworkFile.result_id == result_id)
-        .all()
-    )
-    for old_file in old_files:
-        if old_file.public_id is not None:
-            delete_file(old_file.public_id, old_file.content_type)
-
-    db.query(HomeworkFile).filter(HomeworkFile.result_id == result_id).delete()
-
-    new_rows: list[HomeworkFile] = []
-    for uploaded in uploaded_cloudinary:
-        row = HomeworkFile(
-            result_id=result_id,
-            url=uploaded["url"],
-            public_id=uploaded["public_id"],
-            filename=uploaded["filename"],
-            content_type=uploaded["content_type"],
-            size_bytes=uploaded["size_bytes"],
-            uploaded_at=datetime.utcnow(),
-        )
-        db.add(row)
-        new_rows.append(row)
-    return new_rows
-
-
-def detect_magic_content_type(header: bytes) -> str | None:
-    if len(header) < 4:
-        return None
-    if header[:3] == b"\xff\xd8\xff":
-        return "image/jpeg"
-    if header[:4] == b"\x89PNG":
-        return "image/png"
-    if header[:4] == b"GIF8":
-        return "image/gif"
-    if header[:4] == b"RIFF" and len(header) >= 12 and header[8:12] == b"WEBP":
-        return "image/webp"
-    if header[:4] == b"%PDF":
-        return "application/pdf"
-    if len(header) >= 12 and header[4:8] == b"ftyp":
-        brand = header[8:12]
-        if brand in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"}:
-            return "image/heic"
-    return None
-
-
-def content_type_matches_magic(declared_type: str, magic_type: str | None) -> bool:
-    if magic_type is None:
-        return False
-    if declared_type == magic_type:
-        return True
-    if declared_type == "image/heic" and magic_type == "image/heic":
-        return True
-    if declared_type == "image/jpeg" and magic_type == "image/jpeg":
-        return True
-    return False
 
 
 def get_homework_result_or_404(result_id: int, db: Session) -> HomeworkResult:
@@ -132,37 +77,18 @@ def get_assignment_for_result(result: HomeworkResult, db: Session) -> Assignment
     return assignment
 
 
-def can_view_homework_result(current_user: User, assignment: Assignment, db: Session) -> bool:
-    if current_user.role == "admin":
-        return True
-    if current_user.role == "student":
-        return current_user.id == assignment.student_id
-    if current_user.role == "teacher":
-        session_obj = db.query(ClassSession).filter(
-            ClassSession.id == assignment.session_id
-        ).first()
-        if not session_obj:
-            return False
-        class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
-        if not class_obj:
-            return False
-        return current_user.id in {class_obj.verbal_teacher_id, class_obj.math_teacher_id}
-    return False
+def attachment_items_for_api(items: list[dict]) -> list[dict]:
+    payload: list[dict] = []
+    for item in items:
+        row = dict(item)
+        if "uploaded_at" in row:
+            row["uploaded_at"] = parse_uploaded_at(row["uploaded_at"])
+        payload.append(row)
+    return payload
 
 
-def load_attachments(result_id: int, db: Session) -> list[HomeworkFile]:
-    return (
-        db.query(HomeworkFile)
-        .filter(HomeworkFile.result_id == result_id)
-        .order_by(HomeworkFile.uploaded_at.asc())
-        .all()
-    )
-
-
-def serialize_homework_result(
-    result: HomeworkResult,
-    attachments: list[HomeworkFile],
-) -> dict:
+def serialize_homework_result(result: HomeworkResult) -> dict:
+    attachments = read_attachments(result.attachments)
     payload = HomeworkResultSchema(
         id=result.id,
         assignment_id=result.assignment_id,
@@ -175,74 +101,74 @@ def serialize_homework_result(
         returned_at=result.returned_at,
         returned_by_id=result.returned_by_id,
         return_reason=result.return_reason,
-        attachments=[HomeworkFileSchema.model_validate(item) for item in attachments],
+        attachments=[
+            HomeworkFileSchema.model_validate(item)
+            for item in attachment_items_for_api(attachments)
+        ],
         legacy_photo=len(attachments) == 0 and result.photo_link is not None,
     )
     return payload.model_dump(mode="json")
 
 
-async def validate_upload_files(files: list[UploadFile]) -> list[dict]:
+def serialize_upload_response(result: HomeworkResult) -> dict:
+    attachments = read_attachments(result.attachments)
+    payload = HomeworkUploadResponse(
+        id=result.id,
+        submitted=result.submitted,
+        photo_link=result.photo_link,
+        attachments=[
+            HomeworkFileSchema.model_validate(item)
+            for item in attachment_items_for_api(attachments)
+        ],
+    )
+    return payload.model_dump(mode="json")
+
+
+async def validate_upload_files(files: list[UploadFile]) -> list[dict] | JSONResponse:
     if not files:
         raise HTTPException(status_code=422, detail="At least one file is required")
-
-    if len(files) > MAX_FILES:
-        return validation_error(
-            422,
-            {
-                "error": "TOO_MANY_FILES",
-                "detail": "Maximum 10 files per submission",
-                "max": MAX_FILES,
-            },
-        )
 
     validated: list[dict] = []
     for upload in files:
         filename = upload.filename or "upload"
-        declared_type = (upload.content_type or "").strip().lower()
-        if declared_type not in ALLOWED_CONTENT_TYPES:
+        content_type = upload.content_type or ""
+        if content_type not in ALLOWED_CONTENT_TYPES:
             return validation_error(
-                422,
                 {
                     "error": "INVALID_FILE_TYPE",
-                    "detail": f"File {filename} has unsupported type",
                     "filename": filename,
-                    "allowed": ALLOWED_CONTENT_TYPES_DISPLAY,
-                },
+                    "content_type": content_type,
+                }
             )
 
         file_bytes = await upload.read()
         if len(file_bytes) > MAX_FILE_SIZE_BYTES:
             return validation_error(
-                422,
                 {
                     "error": "FILE_TOO_LARGE",
-                    "detail": f"File {filename} exceeds 50 MB",
                     "filename": filename,
                     "max_mb": 50,
-                },
-            )
-
-        magic_type = detect_magic_content_type(file_bytes[:12])
-        if not content_type_matches_magic(declared_type, magic_type):
-            return validation_error(
-                422,
-                {
-                    "error": "INVALID_FILE_TYPE",
-                    "detail": f"File {filename} has unsupported type",
-                    "filename": filename,
-                    "allowed": ALLOWED_CONTENT_TYPES_DISPLAY,
-                },
+                }
             )
 
         validated.append(
             {
                 "filename": filename,
-                "content_type": declared_type,
+                "content_type": content_type,
                 "bytes": file_bytes,
             }
         )
 
     return validated
+
+
+async def resolve_upload_files(request: Request) -> list[UploadFile]:
+    form = await request.form()
+    return [
+        item
+        for item in (form.getlist("files[]") or form.getlist("files"))
+        if isinstance(item, UploadFile)
+    ]
 
 
 @router.get("/homework-results")
@@ -251,11 +177,7 @@ def list_homework_results(
     current_user: AuthUser = Depends(get_current_user),
 ):
     results = homework_results_query(db, current_user).order_by(HomeworkResult.id.asc()).all()
-    payload = []
-    for result in results:
-        attachments = load_attachments(result.id, db)
-        payload.append(serialize_homework_result(result, attachments))
-    return payload
+    return [serialize_homework_result(result) for result in results]
 
 
 @router.get("/homework-results/{result_id}", response_model=HomeworkResultSchema)
@@ -272,8 +194,7 @@ def get_homework_result(
     if not result:
         raise HTTPException(status_code=404, detail="Homework result not found")
 
-    attachments = load_attachments(result_id, db)
-    return serialize_homework_result(result, attachments)
+    return serialize_homework_result(result)
 
 
 @router.post("/homework-results/{result_id}/return")
@@ -316,17 +237,23 @@ def return_homework_for_revision(
     db.commit()
     db.refresh(result)
 
-    attachments = load_attachments(result_id, db)
-    return serialize_homework_result(result, attachments)
+    return serialize_homework_result(result)
 
 
-@router.post("/homework-results/{result_id}/upload")
+@router.post(
+    "/homework-results/{result_id}/upload",
+    response_model=HomeworkUploadResponse,
+)
 async def upload_homework_result_files(
     result_id: int,
-    files: list[UploadFile] = File(...),
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(legacy_require_roles(["student"])),
 ):
+    files = await resolve_upload_files(request)
+    if not files:
+        raise HTTPException(status_code=422, detail="At least one file is required")
+
     result = get_homework_result_or_404(result_id, db)
     assignment = get_assignment_for_result(result, db)
 
@@ -334,6 +261,28 @@ async def upload_homework_result_files(
         raise HTTPException(
             status_code=403,
             detail="Students can upload only for their own homework results",
+        )
+
+    existing_attachments = read_attachments(result.attachments)
+    is_resubmission = result.returned_at is not None
+    old_attachments = list(existing_attachments) if is_resubmission else []
+
+    if is_resubmission:
+        if len(files) > MAX_FILES:
+            return validation_error(
+                {
+                    "error": "TOO_MANY_FILES",
+                    "max": MAX_FILES,
+                    "current_count": 0,
+                }
+            )
+    elif len(existing_attachments) + len(files) > MAX_FILES:
+        return validation_error(
+            {
+                "error": "TOO_MANY_FILES",
+                "max": MAX_FILES,
+                "current_count": len(existing_attachments),
+            }
         )
 
     validation = await validate_upload_files(files)
@@ -352,57 +301,76 @@ async def upload_homework_result_files(
                 )
             )
     except HTTPException:
-        for uploaded in uploaded_cloudinary:
-            delete_file(uploaded["public_id"], uploaded["content_type"])
+        rollback_uploads(uploaded_cloudinary)
         raise
     except Exception:
-        for uploaded in uploaded_cloudinary:
-            delete_file(uploaded["public_id"], uploaded["content_type"])
-        raise HTTPException(status_code=500, detail="Upload failed, all files rolled back")
+        rollback_uploads(uploaded_cloudinary)
+        raise HTTPException(status_code=500, detail="Upload failed, rolled back")
 
     try:
-        is_resubmission = result.returned_at is not None
-
         if is_resubmission:
-            new_rows = replace_result_files(db, result_id, uploaded_cloudinary)
-            first_image = first_image_url(uploaded_cloudinary)
-            if first_image is not None:
-                result.photo_link = first_image
-
+            delete_attachments_best_effort(old_attachments)
+            write_attachments(result, replace_with_uploads(uploaded_cloudinary))
+            result.photo_link = first_image_url_from_uploads(uploaded_cloudinary)
             result.submitted = True
             result.submitted_at = datetime.utcnow()
             result.returned_at = None
             result.returned_by_id = None
             result.return_reason = None
         else:
-            new_rows: list[HomeworkFile] = []
-            for uploaded in uploaded_cloudinary:
-                row = HomeworkFile(
-                    result_id=result_id,
-                    url=uploaded["url"],
-                    public_id=uploaded["public_id"],
-                    filename=uploaded["filename"],
-                    content_type=uploaded["content_type"],
-                    size_bytes=uploaded["size_bytes"],
-                    uploaded_at=datetime.utcnow(),
-                )
-                db.add(row)
-                new_rows.append(row)
-
+            write_attachments(
+                result,
+                append_uploads(existing_attachments, uploaded_cloudinary),
+            )
             if result.photo_link is None:
-                first_image = first_image_url(uploaded_cloudinary)
+                first_image = first_image_url_from_uploads(uploaded_cloudinary)
                 if first_image is not None:
                     result.photo_link = first_image
 
         db.commit()
-        for row in new_rows:
-            db.refresh(row)
         db.refresh(result)
     except Exception:
         db.rollback()
-        for uploaded in uploaded_cloudinary:
-            delete_file(uploaded["public_id"], uploaded["content_type"])
-        raise HTTPException(status_code=500, detail="Upload failed, all files rolled back")
+        rollback_uploads(uploaded_cloudinary)
+        raise HTTPException(status_code=500, detail="Upload failed, rolled back")
 
-    all_attachments = load_attachments(result_id, db)
-    return serialize_homework_result(result, all_attachments)
+    return serialize_upload_response(result)
+
+
+@router.delete(
+    "/homework-results/{result_id}/attachments/{public_id:path}",
+    status_code=204,
+)
+def delete_homework_attachment(
+    result_id: int,
+    public_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(legacy_get_current_user),
+):
+    if normalize_role(current_user.role) != "admin":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    decoded_public_id = unquote(public_id)
+    result = get_homework_result_or_404(result_id, db)
+    attachments = read_attachments(result.attachments)
+
+    target = next(
+        (item for item in attachments if item.get("public_id") == decoded_public_id),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    delete_file(decoded_public_id, target.get("content_type", "image/jpeg"))
+
+    updated_attachments = [
+        item for item in attachments if item.get("public_id") != decoded_public_id
+    ]
+    write_attachments(result, updated_attachments)
+
+    deleted_url = target.get("url")
+    if result.photo_link == deleted_url:
+        result.photo_link = first_image_url(updated_attachments)
+
+    db.commit()
+    return Response(status_code=204)

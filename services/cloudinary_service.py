@@ -38,19 +38,21 @@ def upload_file(
     result_id: int,
     filename: str,
     content_type: str,
+    folder: str = "homework",
+    public_id_prefix: str = "homework",
 ) -> dict[str, str | int]:
     _configure_cloudinary()
     try:
         result = cloudinary.uploader.upload(
             file_bytes,
-            folder="homework",
+            folder=folder,
             resource_type="auto",
-            public_id=f"homework_{result_id}_{uuid4().hex[:8]}",
+            public_id=f"{public_id_prefix}_{result_id}_{uuid4().hex[:8]}",
         )
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail="Upload failed, all files rolled back",
+            detail="Upload failed, rolled back",
         ) from exc
 
     secure_url = result.get("secure_url")
@@ -58,7 +60,7 @@ def upload_file(
     if not secure_url or not public_id:
         raise HTTPException(
             status_code=500,
-            detail="Upload failed, all files rolled back",
+            detail="Upload failed, rolled back",
         )
 
     return {
@@ -70,14 +72,31 @@ def upload_file(
     }
 
 
+def rollback_uploads(entries: list[dict]) -> None:
+    for entry in entries:
+        public_id = entry.get("public_id")
+        if public_id:
+            delete_file(public_id, entry.get("content_type", "image/jpeg"))
+
+
 def delete_file(public_id: str, content_type: str) -> None:
+    """Delete a Cloudinary asset. Logs errors but does not raise."""
     _configure_cloudinary()
     resource_type = "raw" if content_type == "application/pdf" else "image"
     try:
         cloudinary.uploader.destroy(public_id, resource_type=resource_type)
     except Exception as exc:
-        logger.warning(
+        logger.error(
             "Cloudinary delete failed for public_id=%s: %s",
             public_id,
             exc,
+            exc_info=True,
         )
+
+
+def delete_attachments_best_effort(entries: list[dict]) -> None:
+    """Delete multiple Cloudinary assets; failures are logged and skipped."""
+    for entry in entries:
+        public_id = entry.get("public_id")
+        if public_id:
+            delete_file(public_id, entry.get("content_type", "image/jpeg"))
