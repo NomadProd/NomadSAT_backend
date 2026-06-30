@@ -7,6 +7,11 @@ if [[ ! -d .venv ]]; then
   python3 -m venv .venv
 fi
 
+if [[ ! -f .env ]]; then
+  echo "WARNING: .env not found. Copying from .env.example — edit before use."
+  cp .env.example .env
+fi
+
 .venv/bin/pip install -r requirements.txt -q
 
 LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"

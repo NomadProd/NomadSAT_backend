@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user, normalize_role, require_admin
+from dependencies.auth import AuthUser, get_current_user, normalize_role, require_admin, require_staff
 from Methods.auth import get_db
 from models import (
     Assignment,
@@ -56,6 +56,40 @@ def list_users(
 ):
     users = db.query(User).order_by(User.id.asc()).all()
     return [serialize_user(user) for user in users]
+
+
+@router.get("/users/students")
+def list_students(
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_staff),
+):
+    students = db.query(User).filter(User.role == "student").order_by(User.id.asc()).all()
+    return [
+        {
+            "user_id": student.id,
+            "name": student.name,
+            "surname": student.surname,
+        }
+        for student in students
+    ]
+
+
+@router.get("/users/teachers")
+def list_teachers(
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_staff),
+):
+    teachers = db.query(User).filter(User.role == "teacher").order_by(User.id.asc()).all()
+    return [
+        {
+            "user_id": teacher.id,
+            "email": teacher.email,
+            "name": teacher.name,
+            "surname": teacher.surname,
+            "role": teacher.role,
+        }
+        for teacher in teachers
+    ]
 
 
 @router.get("/users/{user_id}")

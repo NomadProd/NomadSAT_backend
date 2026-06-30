@@ -17,43 +17,6 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 
-@router.get("/students")
-def get_students(
-    db: Session = Depends(get_db),
-    current_user: AuthUser = Depends(require_staff),
-):
-    students = db.query(User).filter(User.role == "student").all()
-
-    return [
-        {
-            "user_id": s.id,
-            "name": s.name,
-            "surname": s.surname
-        }
-        for s in students
-    ]
-
-
-@router.get("/teachers")
-def get_all_teachers(
-    db: Session = Depends(get_db),
-    current_user: AuthUser = Depends(require_staff),
-):
-    users = db.query(User).filter(User.role == "teacher").all()
-
-    return [
-        {
-            "user_id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "surname": user.surname,
-            "role": user.role
-        }
-        for user in users
-    ]
-
-
-
 @router.post("/")
 def create_user(
     user_data: NewUserData,

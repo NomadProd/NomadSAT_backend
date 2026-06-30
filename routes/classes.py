@@ -59,6 +59,7 @@ def serialize_session(session_obj: ClassSession) -> dict:
 
 
 @router.get("/classes")
+@router.get("/classes/")
 def list_classes(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
