@@ -21,3 +21,21 @@ ALTER TABLE homework_results
 
 -- Step 3: RLS skipped — FastAPI uses direct DB + JWT auth (users.id is bigint, not auth.uid() UUID).
 -- Apply Supabase RLS separately if direct client access is added later.
+ALTER TABLE homework_files ENABLE ROW LEVEL SECURITY;
+
+-- Admin: full access
+CREATE POLICY "admin_all_homework_files" ON homework_files
+  FOR ALL USING (
+    EXISTS (SELECT 1 FROM users WHERE id = auth.uid()::bigint AND role = 'admin')
+  );
+
+-- Student: only their own result's files
+CREATE POLICY "student_own_homework_files" ON homework_files
+  FOR SELECT USING (
+    EXISTS (
+      SELECT 1 FROM homework_results hr
+      JOIN assignments a ON a.id = hr.assignment_id
+      WHERE hr.id = homework_files.result_id
+        AND a.student_id = auth.uid()::bigint
+    )
+  );
