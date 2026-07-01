@@ -42,12 +42,17 @@ def upload_file(
     public_id_prefix: str = "homework",
 ) -> dict[str, str | int]:
     _configure_cloudinary()
+    is_pdf = content_type == "application/pdf"
+    resource_type = "raw" if is_pdf else "image"
+    public_id = f"{public_id_prefix}_{result_id}_{uuid4().hex[:8]}"
+    if is_pdf:
+        public_id = f"{public_id}.pdf"
     try:
         result = cloudinary.uploader.upload(
             file_bytes,
             folder=folder,
-            resource_type="auto",
-            public_id=f"{public_id_prefix}_{result_id}_{uuid4().hex[:8]}",
+            resource_type=resource_type,
+            public_id=public_id,
         )
     except Exception as exc:
         raise HTTPException(

@@ -31,6 +31,7 @@ class UpdateClassData(BaseModel):
     name: Optional[str] = None
     verbal_teacher_id: Optional[int] = None
     math_teacher_id: Optional[int] = None
+    archived: Optional[bool] = None
 
 class EnrollmentData(BaseModel):
     student_id: int
@@ -100,6 +101,12 @@ class UpdateAssignmentData(BaseModel):
     due_date: Optional[dt.date] = None
     due_time: Optional[dt.time] = None
     photo_required: Optional[bool] = None
+
+class CopyAssignmentData(BaseModel):
+    target_student_ids: Optional[List[int]] = None
+    all_students: bool = False
+    session_id: Optional[int] = None
+    target_slot_index: Optional[int] = None
 
 class CreateHomeworkResultData(BaseModel):
     submitted: bool = False

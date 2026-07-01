@@ -42,4 +42,7 @@ class HomeworkResultSchema(BaseModel):
     returned_by_id: Optional[int] = None
     return_reason: Optional[str] = None
     attachments: list[HomeworkFileSchema] = []
+    original_attachments: list[HomeworkFileSchema] = []
+    history_id: Optional[int] = None
+    is_historical: bool = False
     legacy_photo: bool = False

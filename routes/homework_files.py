@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from Methods.auth import get_db, get_current_user, normalize_role
 from models import HomeworkResult, User
 from services.attachments import (
+    all_archived_public_ids,
     find_attachment_by_id,
     first_image_url,
     read_attachments,
@@ -33,9 +34,20 @@ def delete_homework_file(
     if result is None or index is None or row is None:
         raise HTTPException(status_code=404, detail="Homework file not found")
 
+    public_id = row.get("public_id")
+    archived_ids = all_archived_public_ids(result)
+    in_archive = public_id is not None and str(public_id) in archived_ids
+    is_active_submission = result.submitted and result.returned_at is None
+
+    if in_archive and not is_active_submission:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot delete archived submission files",
+        )
+
     deleted_url = row.get("url")
-    if row.get("public_id") is not None:
-        delete_file(row["public_id"], row.get("content_type", "image/jpeg"))
+    if public_id is not None and (is_active_submission or not in_archive):
+        delete_file(public_id, row.get("content_type", "image/jpeg"))
 
     remove_attachment_at_index(result, index)
 

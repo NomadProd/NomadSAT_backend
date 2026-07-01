@@ -5,9 +5,56 @@ from dependencies.auth import AuthUser, get_current_user
 from dependencies.filters import assignments_query, sessions_query
 from models import Assignment, Session as ClassSession, Class, User, ClassEnrollment
 from Methods.auth import get_db, require_roles
-from schemas import CreateAssignmentData, UpdateAssignmentData
+from schemas import CreateAssignmentData, UpdateAssignmentData, CopyAssignmentData
 
 router = APIRouter(prefix="/assignments", tags=["assignments"])
+
+MAX_HOMEWORK_SLOTS = 5
+
+
+def ensure_class_staff_access(current_user: User, class_obj: Class) -> None:
+    if current_user.role == "teacher":
+        allowed_teacher_ids = [class_obj.verbal_teacher_id, class_obj.math_teacher_id]
+        if current_user.id not in allowed_teacher_ids:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+
+
+def used_homework_slots(db: Session, session_id: int, student_id: int) -> set[int]:
+    rows = (
+        db.query(Assignment.slot_index)
+        .filter(
+            Assignment.session_id == session_id,
+            Assignment.student_id == student_id,
+            Assignment.slot_index.isnot(None),
+        )
+        .all()
+    )
+    return {
+        int(row[0])
+        for row in rows
+        if row[0] is not None and 1 <= int(row[0]) <= MAX_HOMEWORK_SLOTS
+    }
+
+
+def next_free_homework_slot(db: Session, session_id: int, student_id: int) -> int | None:
+    used = used_homework_slots(db, session_id, student_id)
+    for slot in range(1, MAX_HOMEWORK_SLOTS + 1):
+        if slot not in used:
+            return slot
+    return None
+
+
+def slot_is_free(db: Session, session_id: int, student_id: int, slot_index: int) -> bool:
+    existing = (
+        db.query(Assignment.id)
+        .filter(
+            Assignment.session_id == session_id,
+            Assignment.student_id == student_id,
+            Assignment.slot_index == slot_index,
+        )
+        .first()
+    )
+    return existing is None
 
 
 @router.post("/sessions/{session_id}")
@@ -25,10 +72,7 @@ def create_assignment_for_session(
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
-    if current_user.role == "teacher":
-        allowed_teacher_ids = [class_obj.verbal_teacher_id, class_obj.math_teacher_id]
-        if current_user.id not in allowed_teacher_ids:
-            raise HTTPException(status_code=403, detail="Not enough permissions")
+    ensure_class_staff_access(current_user, class_obj)
 
     student = db.query(User).filter(
         User.id == data.student_id,
@@ -123,6 +167,127 @@ def get_assignments_by_session(
         for a in assignments
     ]
 
+
+
+@router.post("/{assignment_id}/copy")
+def copy_assignment(
+    assignment_id: int,
+    data: CopyAssignmentData,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["admin", "teacher"])),
+):
+    source = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    source_session = (
+        db.query(ClassSession).filter(ClassSession.id == source.session_id).first()
+    )
+    if not source_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    target_session_id = data.session_id or source.session_id
+    if target_session_id != source.session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Copying to a different session is not supported",
+        )
+
+    class_obj = db.query(Class).filter(Class.id == source_session.class_id).first()
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Class not found")
+
+    ensure_class_staff_access(current_user, class_obj)
+
+    if data.all_students or not data.target_student_ids:
+        enrollments = (
+            db.query(ClassEnrollment)
+            .filter(ClassEnrollment.class_id == class_obj.id)
+            .all()
+        )
+        target_student_ids = [enrollment.student_id for enrollment in enrollments]
+    else:
+        target_student_ids = list(dict.fromkeys(data.target_student_ids))
+
+    target_student_ids = [
+        student_id
+        for student_id in target_student_ids
+        if student_id != source.student_id
+    ]
+
+    if not target_student_ids:
+        raise HTTPException(status_code=400, detail="No target students to copy to")
+
+    created: list[dict] = []
+    skipped: list[dict] = []
+
+    for student_id in target_student_ids:
+        student = db.query(User).filter(
+            User.id == student_id,
+            User.role == "student",
+        ).first()
+        if not student:
+            skipped.append({"student_id": student_id, "reason": "STUDENT_NOT_FOUND"})
+            continue
+
+        enrollment = (
+            db.query(ClassEnrollment)
+            .filter(
+                ClassEnrollment.class_id == class_obj.id,
+                ClassEnrollment.student_id == student_id,
+            )
+            .first()
+        )
+        if not enrollment:
+            skipped.append({"student_id": student_id, "reason": "NOT_ENROLLED"})
+            continue
+
+        if data.target_slot_index is not None:
+            slot_index = data.target_slot_index
+            if not (1 <= slot_index <= MAX_HOMEWORK_SLOTS):
+                skipped.append(
+                    {"student_id": student_id, "reason": "INVALID_SLOT"}
+                )
+                continue
+            if not slot_is_free(db, target_session_id, student_id, slot_index):
+                skipped.append({"student_id": student_id, "reason": "SLOT_OCCUPIED"})
+                continue
+        else:
+            slot_index = next_free_homework_slot(db, target_session_id, student_id)
+            if slot_index is None:
+                skipped.append({"student_id": student_id, "reason": "NO_FREE_SLOT"})
+                continue
+
+        title = source.title or f"Homework {slot_index}"
+        new_assignment = Assignment(
+            session_id=target_session_id,
+            student_id=student_id,
+            slot_index=slot_index,
+            title=title,
+            instruction=source.instruction,
+            task_link=source.task_link,
+            due_date=source.due_date,
+            due_time=source.due_time,
+            photo_required=source.photo_required,
+        )
+        db.add(new_assignment)
+        db.flush()
+        created.append(
+            {
+                "student_id": student_id,
+                "assignment_id": new_assignment.id,
+                "slot_index": slot_index,
+            }
+        )
+
+    db.commit()
+
+    return {
+        "message": f"Copied to {len(created)} student(s), skipped {len(skipped)}",
+        "source_assignment_id": source.id,
+        "created": created,
+        "skipped": skipped,
+    }
 
 
 @router.patch("/{assignment_id}")

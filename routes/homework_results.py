@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+import mimetypes
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
@@ -26,16 +28,22 @@ from schemas.homework_result import (
     ReturnHomeworkRequest,
 )
 from services.attachments import (
+    all_archived_public_ids,
+    append_submission_history,
     append_uploads,
+    attachment_public_ids,
+    find_history_entry,
     first_image_url,
     first_image_url_from_uploads,
     parse_uploaded_at,
     read_attachments,
-    replace_with_uploads,
+    read_original_attachments,
+    read_submission_history,
+    remove_history_attachment,
+    snapshot_original_attachments,
     write_attachments,
 )
 from services.cloudinary_service import (
-    delete_attachments_best_effort,
     delete_file,
     rollback_uploads,
     upload_file,
@@ -53,6 +61,32 @@ ALLOWED_CONTENT_TYPES = {
     "image/heic",
     "application/pdf",
 }
+
+EXTENSION_TO_MIME = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    "pdf": "application/pdf",
+}
+
+
+def resolve_upload_content_type(filename: str, reported: str | None) -> str | None:
+    normalized = (reported or "").split(";", 1)[0].strip().lower()
+    if normalized in ALLOWED_CONTENT_TYPES:
+        return normalized
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext in EXTENSION_TO_MIME:
+        return EXTENSION_TO_MIME[ext]
+
+    guessed, _ = mimetypes.guess_type(filename)
+    if guessed and guessed in ALLOWED_CONTENT_TYPES:
+        return guessed
+
+    return None
 
 
 def validation_error(payload: dict) -> JSONResponse:
@@ -89,6 +123,7 @@ def attachment_items_for_api(items: list[dict]) -> list[dict]:
 
 def serialize_homework_result(result: HomeworkResult) -> dict:
     attachments = read_attachments(result.attachments)
+    original_attachments = read_original_attachments(result)
     payload = HomeworkResultSchema(
         id=result.id,
         assignment_id=result.assignment_id,
@@ -105,7 +140,52 @@ def serialize_homework_result(result: HomeworkResult) -> dict:
             HomeworkFileSchema.model_validate(item)
             for item in attachment_items_for_api(attachments)
         ],
+        original_attachments=[
+            HomeworkFileSchema.model_validate(item)
+            for item in attachment_items_for_api(original_attachments)
+        ],
         legacy_photo=len(attachments) == 0 and result.photo_link is not None,
+    )
+    return payload.model_dump(mode="json")
+
+
+def serialize_history_homework_result(result: HomeworkResult, history_id: int) -> dict:
+    entry = find_history_entry(result, history_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Historical submission not found")
+
+    attachments = read_attachments(entry.get("attachments"))
+    submitted_at = entry.get("submitted_at")
+    if submitted_at is not None and not isinstance(submitted_at, datetime):
+        submitted_at = parse_uploaded_at(submitted_at)
+
+    returned_at = entry.get("returned_at")
+    if returned_at is not None and not isinstance(returned_at, datetime):
+        returned_at = parse_uploaded_at(returned_at)
+
+    payload = HomeworkResultSchema(
+        id=result.id,
+        assignment_id=result.assignment_id,
+        submitted=True,
+        submitted_at=submitted_at,
+        photo_link=first_image_url(attachments) or result.photo_link,
+        correct_total=entry.get("correct_total"),
+        incorrect_total=entry.get("incorrect_total"),
+        analysis=entry.get("analysis"),
+        returned_at=returned_at,
+        returned_by_id=result.returned_by_id,
+        return_reason=entry.get("return_reason"),
+        attachments=[
+            HomeworkFileSchema.model_validate(item)
+            for item in attachment_items_for_api(attachments)
+        ],
+        original_attachments=[
+            HomeworkFileSchema.model_validate(item)
+            for item in attachment_items_for_api(attachments)
+        ],
+        history_id=history_id,
+        is_historical=True,
+        legacy_photo=False,
     )
     return payload.model_dump(mode="json")
 
@@ -131,13 +211,13 @@ async def validate_upload_files(files: list[UploadFile]) -> list[dict] | JSONRes
     validated: list[dict] = []
     for upload in files:
         filename = upload.filename or "upload"
-        content_type = upload.content_type or ""
-        if content_type not in ALLOWED_CONTENT_TYPES:
+        content_type = resolve_upload_content_type(filename, upload.content_type)
+        if content_type is None:
             return validation_error(
                 {
                     "error": "INVALID_FILE_TYPE",
                     "filename": filename,
-                    "content_type": content_type,
+                    "content_type": upload.content_type or "",
                 }
             )
 
@@ -183,6 +263,7 @@ def list_homework_results(
 @router.get("/homework-results/{result_id}", response_model=HomeworkResultSchema)
 def get_homework_result(
     result_id: int,
+    history_id: int | None = Query(default=None, ge=1),
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -193,6 +274,9 @@ def get_homework_result(
     )
     if not result:
         raise HTTPException(status_code=404, detail="Homework result not found")
+
+    if history_id is not None:
+        return serialize_history_homework_result(result, history_id)
 
     return serialize_homework_result(result)
 
@@ -225,9 +309,21 @@ def return_homework_for_revision(
         )
 
     reason = body.reason.strip() if body.reason and body.reason.strip() else None
+    returned_at = datetime.utcnow()
+    append_submission_history(
+        result,
+        submitted_at=result.submitted_at,
+        correct_total=result.correct_total,
+        incorrect_total=result.incorrect_total,
+        analysis=result.analysis,
+        attachments=read_attachments(result.attachments),
+        returned_at=returned_at,
+        return_reason=reason,
+    )
+    snapshot_original_attachments(result)
     result.submitted = False
     result.submitted_at = None
-    result.returned_at = datetime.utcnow()
+    result.returned_at = returned_at
     result.returned_by_id = current_user.id
     result.return_reason = reason
     result.correct_total = None
@@ -246,11 +342,10 @@ def return_homework_for_revision(
 )
 async def upload_homework_result_files(
     result_id: int,
-    request: Request,
+    files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(legacy_require_roles(["student"])),
 ):
-    files = await resolve_upload_files(request)
     if not files:
         raise HTTPException(status_code=422, detail="At least one file is required")
 
@@ -264,19 +359,8 @@ async def upload_homework_result_files(
         )
 
     existing_attachments = read_attachments(result.attachments)
-    is_resubmission = result.returned_at is not None
-    old_attachments = list(existing_attachments) if is_resubmission else []
 
-    if is_resubmission:
-        if len(files) > MAX_FILES:
-            return validation_error(
-                {
-                    "error": "TOO_MANY_FILES",
-                    "max": MAX_FILES,
-                    "current_count": 0,
-                }
-            )
-    elif len(existing_attachments) + len(files) > MAX_FILES:
+    if len(existing_attachments) + len(files) > MAX_FILES:
         return validation_error(
             {
                 "error": "TOO_MANY_FILES",
@@ -308,24 +392,14 @@ async def upload_homework_result_files(
         raise HTTPException(status_code=500, detail="Upload failed, rolled back")
 
     try:
-        if is_resubmission:
-            delete_attachments_best_effort(old_attachments)
-            write_attachments(result, replace_with_uploads(uploaded_cloudinary))
-            result.photo_link = first_image_url_from_uploads(uploaded_cloudinary)
-            result.submitted = True
-            result.submitted_at = datetime.utcnow()
-            result.returned_at = None
-            result.returned_by_id = None
-            result.return_reason = None
-        else:
-            write_attachments(
-                result,
-                append_uploads(existing_attachments, uploaded_cloudinary),
-            )
-            if result.photo_link is None:
-                first_image = first_image_url_from_uploads(uploaded_cloudinary)
-                if first_image is not None:
-                    result.photo_link = first_image
+        write_attachments(
+            result,
+            append_uploads(existing_attachments, uploaded_cloudinary),
+        )
+        if result.photo_link is None:
+            first_image = first_image_url_from_uploads(uploaded_cloudinary)
+            if first_image is not None:
+                result.photo_link = first_image
 
         db.commit()
         db.refresh(result)
@@ -347,11 +421,24 @@ def delete_homework_attachment(
     db: Session = Depends(get_db),
     current_user: User = Depends(legacy_get_current_user),
 ):
-    if normalize_role(current_user.role) != "admin":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-
     decoded_public_id = unquote(public_id)
     result = get_homework_result_or_404(result_id, db)
+    assignment = get_assignment_for_result(result, db)
+
+    role = normalize_role(current_user.role)
+    if role == "admin":
+        pass
+    elif role == "student":
+        if current_user.id != assignment.student_id:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        if result.submitted and result.returned_at is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot delete files from a submitted homework result",
+            )
+    else:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
     attachments = read_attachments(result.attachments)
 
     target = next(
@@ -361,16 +448,55 @@ def delete_homework_attachment(
     if target is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    delete_file(decoded_public_id, target.get("content_type", "image/jpeg"))
+    archived_ids = all_archived_public_ids(result)
+    in_archive = decoded_public_id in archived_ids
+    is_admin_active_submission = (
+        role == "admin" and result.submitted and result.returned_at is None
+    )
+
+    if role == "admin" and in_archive and not is_admin_active_submission:
+        raise HTTPException(
+            status_code=403,
+            detail="Delete archived submission files from the submission history view",
+        )
 
     updated_attachments = [
         item for item in attachments if item.get("public_id") != decoded_public_id
     ]
     write_attachments(result, updated_attachments)
 
+    if is_admin_active_submission or not in_archive:
+        delete_file(decoded_public_id, target.get("content_type", "image/jpeg"))
+
     deleted_url = target.get("url")
     if result.photo_link == deleted_url:
         result.photo_link = first_image_url(updated_attachments)
 
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.delete(
+    "/homework-results/{result_id}/history/{history_id}/attachments/{public_id:path}",
+    status_code=204,
+)
+def delete_history_homework_attachment(
+    result_id: int,
+    history_id: int,
+    public_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(legacy_get_current_user),
+):
+    if normalize_role(current_user.role) != "admin":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    decoded_public_id = unquote(public_id)
+    result = get_homework_result_or_404(result_id, db)
+
+    removed = remove_history_attachment(result, history_id, decoded_public_id)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    delete_file(decoded_public_id, removed.get("content_type", "image/jpeg"))
     db.commit()
     return Response(status_code=204)

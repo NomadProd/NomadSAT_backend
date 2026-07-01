@@ -10,6 +10,7 @@ from mock_assignments import ensure_mock_assignments_for_class
 from Methods.auth import get_db, require_roles
 from routes.mock_results import serialize_mock_result_list_item
 from schemas import CreateClassData, UpdateClassData, EnrollmentData
+from services.attachments import read_submission_history
 
 router = APIRouter(prefix="/classes", tags=["classes"])
 
@@ -85,6 +86,69 @@ def calc_accuracy(correct, incorrect):
     if total == 0:
         return None
     return round(correct * 100 / total, 2)
+
+
+def serialize_class_homework_result_row(
+    result: HomeworkResult,
+    student_id: int,
+    *,
+    history_id: int | None = None,
+    is_historical: bool = False,
+    history_entry: dict | None = None,
+):
+    if is_historical and history_entry is not None:
+        return {
+            "result_id": result.id,
+            "history_id": history_entry.get("history_id"),
+            "is_historical": True,
+            "assignment_id": result.assignment_id,
+            "student_id": student_id,
+            "submitted": True,
+            "submitted_at": history_entry.get("submitted_at"),
+            "photo_link": result.photo_link,
+            "correct_total": history_entry.get("correct_total"),
+            "incorrect_total": history_entry.get("incorrect_total"),
+            "analysis": history_entry.get("analysis"),
+            "accuracy": calc_accuracy(
+                history_entry.get("correct_total"),
+                history_entry.get("incorrect_total"),
+            ),
+        }
+
+    return {
+        "result_id": result.id,
+        "history_id": None,
+        "is_historical": False,
+        "assignment_id": result.assignment_id,
+        "student_id": student_id,
+        "submitted": result.submitted,
+        "submitted_at": result.submitted_at,
+        "photo_link": result.photo_link,
+        "correct_total": result.correct_total,
+        "incorrect_total": result.incorrect_total,
+        "analysis": result.analysis,
+        "accuracy": calc_accuracy(result.correct_total, result.incorrect_total),
+    }
+
+
+def expand_class_homework_result_rows(
+    result: HomeworkResult,
+    student_id: int,
+) -> list[dict]:
+    history = read_submission_history(result)
+    rows = [
+        serialize_class_homework_result_row(
+            result,
+            student_id,
+            history_id=int(entry.get("history_id", 0)),
+            is_historical=True,
+            history_entry=entry,
+        )
+        for entry in history
+    ]
+    if result.submitted or not history:
+        rows.append(serialize_class_homework_result_row(result, student_id))
+    return rows
 
 
 def serialize_session(session_obj: ClassSession, db: Session):
@@ -225,7 +289,11 @@ def get_student_home_class_details(
     if not class_ids:
         return []
 
-    classes = db.query(Class).filter(Class.id.in_(class_ids)).all()
+    classes = (
+        db.query(Class)
+        .filter(Class.id.in_(class_ids), Class.archived.is_(False))
+        .all()
+    )
     result = []
 
     for class_obj in classes:
@@ -336,6 +404,9 @@ def update_class(
             raise HTTPException(status_code=404, detail="Math teacher not found")
         class_obj.math_teacher_id = data.math_teacher_id
 
+    if data.archived is not None:
+        class_obj.archived = data.archived
+
     db.commit()
     db.refresh(class_obj)
 
@@ -344,7 +415,8 @@ def update_class(
         "class_id": class_obj.id,
         "class_name": class_obj.name,
         "verbal_teacher_id": class_obj.verbal_teacher_id,
-        "math_teacher_id": class_obj.math_teacher_id
+        "math_teacher_id": class_obj.math_teacher_id,
+        "archived": bool(class_obj.archived),
     }
 
 
@@ -516,22 +588,13 @@ def get_class_homework_results(
         HomeworkResult.assignment_id.in_(assignment_ids)
     ).all()
 
-    return [
-        {
-            "result_id": r.id,
-            "assignment_id": r.assignment_id,
-            "student_id": assignment_map[r.assignment_id].student_id,
-            "submitted": r.submitted,
-            "submitted_at": r.submitted_at,
-            "photo_link": r.photo_link,
-            "correct_total": r.correct_total,
-            "incorrect_total": r.incorrect_total,
-            "analysis": r.analysis,
-            "accuracy": calc_accuracy(r.correct_total, r.incorrect_total)
-        }
-        for r in results
-        if r.assignment_id in assignment_map
-    ]
+    rows: list[dict] = []
+    for result in results:
+        if result.assignment_id not in assignment_map:
+            continue
+        student_id = assignment_map[result.assignment_id].student_id
+        rows.extend(expand_class_homework_result_rows(result, student_id))
+    return rows
 
 
 @router.get("/{class_id}/mock-results")

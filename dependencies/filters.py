@@ -18,20 +18,26 @@ def classes_query(db: Session, user: AuthUser) -> Query:
     query = db.query(Class)
     role = normalize_role(user.role)
 
-    if role in ("admin", "mentor"):
+    if role == "admin":
         return query
+    if role == "mentor":
+        return query.filter(Class.archived.is_(False))
     if role == "teacher":
         return query.filter(
+            Class.archived.is_(False),
             or_(
                 Class.verbal_teacher_id == user.id,
                 Class.math_teacher_id == user.id,
-            )
+            ),
         )
     if role == "student":
         enrolled_class_ids = select(ClassEnrollment.class_id).where(
             ClassEnrollment.student_id == user.id
         )
-        return query.filter(Class.id.in_(enrolled_class_ids))
+        return query.filter(
+            Class.archived.is_(False),
+            Class.id.in_(enrolled_class_ids),
+        )
 
     return query.filter(Class.id == -1)
 

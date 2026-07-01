@@ -572,6 +572,10 @@ async def update_homework_result(
         if data["submitted"]:
             if result.submitted_at is None:
                 result.submitted_at = datetime.utcnow()
+            if result.returned_at is not None:
+                result.returned_at = None
+                result.returned_by_id = None
+                result.return_reason = None
         else:
             result.submitted_at = None
 

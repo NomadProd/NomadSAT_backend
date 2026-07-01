@@ -46,6 +46,7 @@ class Class(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
+    archived = Column(Boolean, default=False, nullable=False, server_default="false")
 
     verbal_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     math_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -207,6 +208,8 @@ class HomeworkResult(Base):
     returned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     return_reason = Column(Text, nullable=True)
     attachments = Column(JSONB, nullable=False, server_default="[]")
+    original_attachments = Column(JSONB, nullable=False, server_default="[]")
+    submission_history = Column(JSONB, nullable=False, server_default="[]")
 
     assignment = relationship("Assignment", back_populates="homework_result")
 

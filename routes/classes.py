@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,7 @@ def serialize_class_summary(class_obj: Class, db: Session) -> dict:
         "verbal_teacher_surname": verbal_teacher.surname if verbal_teacher else None,
         "math_teacher_name": math_teacher.name if math_teacher else None,
         "math_teacher_surname": math_teacher.surname if math_teacher else None,
+        "archived": bool(class_obj.archived),
     }
 
 
@@ -61,10 +62,14 @@ def serialize_session(session_obj: ClassSession) -> dict:
 @router.get("/classes")
 @router.get("/classes/")
 def list_classes(
+    archived: bool | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    classes = classes_query(db, current_user).order_by(Class.id.asc()).all()
+    query = classes_query(db, current_user)
+    if normalize_role(current_user.role) == "admin" and archived is not None:
+        query = query.filter(Class.archived.is_(archived))
+    classes = query.order_by(Class.id.asc()).all()
     return [serialize_class_summary(class_obj, db) for class_obj in classes]
 
 
@@ -108,6 +113,7 @@ def get_class(
     return {
         "class_id": class_obj.id,
         "class_name": class_obj.name,
+        "archived": bool(class_obj.archived),
         "verbal_teacher": {
             "user_id": verbal_teacher.id,
             "name": verbal_teacher.name,
