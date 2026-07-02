@@ -80,6 +80,10 @@ def get_current_user(
     return AuthUser(id=row.id, role=normalize_role(row.role))
 
 
+def is_admin_or_mentor(role: str | None) -> bool:
+    return normalize_role(role) in ("admin", "mentor")
+
+
 def require_admin(user: AuthUser = Depends(get_current_user)) -> AuthUser:
     if normalize_role(user.role) != "admin":
         raise HTTPException(status_code=403, detail="Not enough permissions")

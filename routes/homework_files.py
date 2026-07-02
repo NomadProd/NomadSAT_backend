@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from Methods.auth import get_db, get_current_user, normalize_role
+from dependencies.auth import is_admin_or_mentor
 from models import HomeworkResult, User
 from services.attachments import (
     all_archived_public_ids,
@@ -26,7 +27,7 @@ def delete_homework_file(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if normalize_role(current_user.role) != "admin":
+    if not is_admin_or_mentor(current_user.role):
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
     results = db.query(HomeworkResult).all()
