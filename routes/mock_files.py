@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
+from dependencies.auth import is_admin_or_mentor
 from Methods.auth import get_db, get_current_user, normalize_role
 from models import MockResult, User
 from services.attachments import (
@@ -31,7 +32,7 @@ def delete_mock_file(
         raise HTTPException(status_code=404, detail="Mock file not found")
 
     role = normalize_role(current_user.role)
-    if role == "admin":
+    if is_admin_or_mentor(role):
         pass
     elif role == "student":
         if current_user.id != result.student_id:

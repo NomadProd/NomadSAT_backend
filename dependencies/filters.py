@@ -18,10 +18,8 @@ def classes_query(db: Session, user: AuthUser) -> Query:
     query = db.query(Class)
     role = normalize_role(user.role)
 
-    if role == "admin":
+    if role in ("admin", "mentor"):
         return query
-    if role == "mentor":
-        return query.filter(Class.archived.is_(False))
     if role == "teacher":
         return query.filter(
             Class.archived.is_(False),

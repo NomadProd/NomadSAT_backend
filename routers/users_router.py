@@ -21,14 +21,11 @@ router = APIRouter(prefix="/users", tags=["users"])
 def create_user(
     user_data: NewUserData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
     role = normalize_role(user_data.role)
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
-
-    if current_user.role == "mentor" and role != "student":
-        raise HTTPException(status_code=403, detail="Mentors can create only students")
 
     existing_user = db.query(User).filter(User.email == user_data.email).first()
     if existing_user:
@@ -72,10 +69,6 @@ def update_user(
     if actor_role == "student" and current_user.id != user_id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    if actor_role == "mentor":
-        if target_role != "student":
-            raise HTTPException(status_code=403, detail="Mentors can edit only students")
-
     if actor_role == "teacher":
         if target_role != "student":
             raise HTTPException(status_code=403, detail="Teachers can edit only students")
@@ -100,10 +93,8 @@ def update_user(
         if role not in VALID_USER_ROLES:
             raise HTTPException(status_code=400, detail="Invalid role")
 
-        if current_user.role == "admin":
+        if current_user.role in ("admin", "mentor"):
             user.role = role
-        elif current_user.role == "mentor":
-            raise HTTPException(status_code=403, detail="Mentors cannot change user roles")
         elif current_user.role == "teacher":
             if role != "student":
                 raise HTTPException(status_code=403, detail="Teachers cannot change role to this value")

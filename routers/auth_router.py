@@ -93,14 +93,11 @@ def get_me(user: User = Depends(get_current_user)):
 def register_user(
     user_data: NewUserData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
     role = normalize_role(user_data.role)
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
-
-    if current_user.role == "mentor" and role not in ["teacher", "student"]:
-        raise HTTPException(status_code=403, detail="Mentors can create only teachers or students")
 
     existing_user = db.query(User).filter(User.email == user_data.email).first()
     if existing_user:

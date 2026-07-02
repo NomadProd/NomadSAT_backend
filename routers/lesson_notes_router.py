@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from models import AcademicPlanItem, Class, ClassEnrollment, Session as ClassSession, User
+from dependencies.auth import is_admin_or_mentor
 from Methods.auth import get_db, require_roles
 from schemas import (
     CreateSessionLessonNotesData,
@@ -242,7 +243,7 @@ def delete_session_lesson_notes(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "teacher"]))
 ):
-    if current_user.role != "admin":
+    if not is_admin_or_mentor(current_user.role):
         raise HTTPException(status_code=403, detail="Only admins can delete lesson notes")
 
     session_obj, class_obj = get_session_and_class(session_id, db)
@@ -335,11 +336,8 @@ def delete_session_academic_plan_item(
     session_id: int,
     plan_item_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can delete academic plans")
-
     session_obj, class_obj = get_session_and_class(session_id, db)
     ensure_class_access(current_user, class_obj, db, write=True)
 
@@ -395,11 +393,8 @@ def update_session_academic_plan(
 def delete_session_academic_plan(
     session_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can delete academic plans")
-
     session_obj, class_obj = get_session_and_class(session_id, db)
     ensure_class_access(current_user, class_obj, db, write=True)
 

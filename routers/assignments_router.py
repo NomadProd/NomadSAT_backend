@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user
+from dependencies.auth import AuthUser, get_current_user, is_admin_or_mentor
 from dependencies.filters import assignments_query, sessions_query
 from models import Assignment, Session as ClassSession, Class, User, ClassEnrollment
 from Methods.auth import get_db, require_roles
@@ -153,7 +153,7 @@ def create_assignment_for_session(
     session_id: int,
     data: CreateAssignmentData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "mentor", "teacher"]))
 ):
     session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not session_obj:
@@ -265,7 +265,7 @@ def copy_assignment(
     assignment_id: int,
     data: CopyAssignmentData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"])),
+    current_user: User = Depends(require_roles(["admin", "mentor", "teacher"])),
 ):
     source = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not source:
@@ -388,7 +388,7 @@ def update_assignment(
     assignment_id: int,
     data: UpdateAssignmentData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "mentor", "teacher"]))
 ):
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
@@ -477,7 +477,7 @@ def update_assignment(
 def delete_assignment(
     assignment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "mentor", "teacher"]))
 ):
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
@@ -498,7 +498,7 @@ def delete_assignment(
                 status_code=403,
                 detail="Only assigned teachers can delete this assignment"
             )
-    elif current_user.role != "admin":
+    elif not is_admin_or_mentor(current_user.role):
         raise HTTPException(
             status_code=403,
             detail="Only admins and assigned teachers can delete assignments"

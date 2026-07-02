@@ -508,7 +508,7 @@ def update_class(
     class_id: int,
     data: UpdateClassData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
     class_obj = db.query(Class).filter(Class.id == class_id).first()
     if not class_obj:
@@ -556,7 +556,7 @@ def assign_student_to_class(
     class_id: int,
     data: EnrollmentData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "mentor", "teacher"]))
 ):
     class_obj = db.query(Class).filter(Class.id == class_id).first()
     if not class_obj:

@@ -96,7 +96,7 @@ def list_teachers(
 def get_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: AuthUser = Depends(require_admin),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:

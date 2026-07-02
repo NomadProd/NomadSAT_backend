@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user, normalize_role
+from dependencies.auth import AuthUser, get_current_user, is_admin_or_mentor, normalize_role
 from dependencies.filters import classes_query, sessions_query
 from Methods.auth import get_db
 from models import (
@@ -67,7 +67,7 @@ def list_classes(
     current_user: AuthUser = Depends(get_current_user),
 ):
     query = classes_query(db, current_user)
-    if normalize_role(current_user.role) == "admin" and archived is not None:
+    if is_admin_or_mentor(current_user.role) and archived is not None:
         query = query.filter(Class.archived.is_(archived))
     classes = query.order_by(Class.id.asc()).all()
     return [serialize_class_summary(class_obj, db) for class_obj in classes]
@@ -158,7 +158,7 @@ def delete_class(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    if normalize_role(current_user.role) != "admin":
+    if not is_admin_or_mentor(current_user.role):
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
     class_obj = db.query(Class).filter(Class.id == class_id).first()
@@ -183,7 +183,7 @@ def remove_student_from_class(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    if normalize_role(current_user.role) != "admin":
+    if not is_admin_or_mentor(current_user.role):
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
     enrollment = db.query(ClassEnrollment).filter(

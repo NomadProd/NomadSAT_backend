@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user
+from dependencies.auth import AuthUser, get_current_user, is_admin_or_mentor
 from dependencies.filters import classes_query, sessions_query
 from models import AcademicPlanItem, Class, Session as ClassSession, User
 from mock_assignments import ensure_mock_assignments_for_session
@@ -102,7 +102,7 @@ def create_session(
     class_id: int,
     data: CreateSessionData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "mentor", "teacher"]))
 ):
     class_obj = db.query(Class).filter(Class.id == class_id).first()
     if not class_obj:
@@ -183,7 +183,7 @@ def update_session(
     session_id: int,
     data: UpdateSessionData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "teacher"]))
+    current_user: User = Depends(require_roles(["admin", "mentor", "teacher"]))
 ):
     session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not session_obj:
@@ -244,11 +244,8 @@ def update_session(
 def delete_session(
     session_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can delete sessions")
-
     session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")
