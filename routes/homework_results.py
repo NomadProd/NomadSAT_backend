@@ -286,12 +286,19 @@ def return_homework_for_revision(
     result_id: int,
     body: ReturnHomeworkRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(legacy_get_current_user),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    if normalize_role(current_user.role) != "admin":
+    role = normalize_role(current_user.role)
+    if role not in ("admin", "mentor", "teacher"):
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    result = get_homework_result_or_404(result_id, db)
+    result = (
+        homework_results_query(db, current_user)
+        .filter(HomeworkResult.id == result_id)
+        .first()
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Homework result not found")
 
     if not result.submitted:
         if result.returned_at is not None:
