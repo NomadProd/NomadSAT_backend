@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user, is_admin_or_mentor, normalize_role
+from dependencies.auth import AuthUser, get_current_user, normalize_role
 from dependencies.filters import homework_results_query
 from Methods.auth import (
     get_db,
@@ -288,7 +288,7 @@ def return_homework_for_revision(
     db: Session = Depends(get_db),
     current_user: User = Depends(legacy_get_current_user),
 ):
-    if not is_admin_or_mentor(current_user.role):
+    if normalize_role(current_user.role) != "admin":
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
     result = get_homework_result_or_404(result_id, db)
@@ -426,7 +426,7 @@ def delete_homework_attachment(
     assignment = get_assignment_for_result(result, db)
 
     role = normalize_role(current_user.role)
-    if is_admin_or_mentor(current_user.role):
+    if role == "admin":
         pass
     elif role == "student":
         if current_user.id != assignment.student_id:
@@ -450,11 +450,11 @@ def delete_homework_attachment(
 
     archived_ids = all_archived_public_ids(result)
     in_archive = decoded_public_id in archived_ids
-    is_staff_active_submission = (
-        is_admin_or_mentor(role) and result.submitted and result.returned_at is None
+    is_admin_active_submission = (
+        role == "admin" and result.submitted and result.returned_at is None
     )
 
-    if is_admin_or_mentor(role) and in_archive and not is_staff_active_submission:
+    if role == "admin" and in_archive and not is_admin_active_submission:
         raise HTTPException(
             status_code=403,
             detail="Delete archived submission files from the submission history view",
@@ -465,7 +465,7 @@ def delete_homework_attachment(
     ]
     write_attachments(result, updated_attachments)
 
-    if is_staff_active_submission or not in_archive:
+    if is_admin_active_submission or not in_archive:
         delete_file(decoded_public_id, target.get("content_type", "image/jpeg"))
 
     deleted_url = target.get("url")
@@ -487,7 +487,7 @@ def delete_history_homework_attachment(
     db: Session = Depends(get_db),
     current_user: User = Depends(legacy_get_current_user),
 ):
-    if not is_admin_or_mentor(current_user.role):
+    if normalize_role(current_user.role) != "admin":
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
     decoded_public_id = unquote(public_id)
