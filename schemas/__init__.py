@@ -36,6 +36,13 @@ class CreateClassData(BaseModel):
     mock_schedule: Optional[List[WeeklyLessonSlot]] = None
     schedule_template: Optional[str] = None
 
+class UpdateClassScheduleData(BaseModel):
+    from_date: dt.date
+    to_date: dt.date
+    verbal_schedule: Optional[List[WeeklyLessonSlot]] = None
+    math_schedule: Optional[List[WeeklyLessonSlot]] = None
+    mock_schedule: Optional[List[WeeklyLessonSlot]] = None
+
 class UpdateClassData(BaseModel):
     name: Optional[str] = None
     verbal_teacher_id: Optional[int] = None

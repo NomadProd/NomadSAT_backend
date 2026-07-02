@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 from dependencies.auth import AuthUser, get_current_user, require_admin, require_staff
 from dependencies.filters import classes_query, sessions_query, homework_results_query
 from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, MockResult, Session as ClassSession
-from mock_assignments import ensure_mock_assignments_for_class
+from mock_assignments import ensure_mock_assignments_for_class, ensure_mock_assignments_for_session
 from Methods.auth import get_db, require_roles
 from routes.mock_results import serialize_mock_result_list_item
-from schemas import CreateClassData, UpdateClassData, EnrollmentData
+from schemas import CreateClassData, UpdateClassData, UpdateClassScheduleData, EnrollmentData
 from services.attachments import read_submission_history
 
 router = APIRouter(prefix="/classes", tags=["classes"])
@@ -175,6 +175,135 @@ def default_lesson_end(start: time) -> time:
     start_dt = datetime.combine(datetime.min, start)
     end_dt = start_dt + timedelta(hours=1, minutes=30)
     return end_dt.time()
+
+
+def iter_weekday_in_range(from_date, to_date, weekday: int):
+    if from_date > to_date:
+        return
+    days_ahead = (weekday - from_date.weekday()) % 7
+    session_date = from_date + timedelta(days=days_ahead)
+    while session_date <= to_date:
+        yield session_date
+        session_date += timedelta(days=7)
+
+
+def build_session_specs_for_range(
+    class_obj: Class,
+    from_date,
+    to_date,
+    verbal_slots,
+    math_slots,
+    mock_slots,
+) -> dict[tuple, dict]:
+    specs: dict[tuple, dict] = {}
+
+    for slot in verbal_slots:
+        if slot.day_of_week < 0 or slot.day_of_week > 6:
+            continue
+        end_time = slot.end_time or default_lesson_end(slot.start_time)
+        for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
+            specs[(session_date, "verbal")] = {
+                "start_time": slot.start_time,
+                "end_time": end_time,
+                "teacher_id": class_obj.verbal_teacher_id,
+                "topic": "Verbal lesson",
+            }
+
+    for slot in math_slots:
+        if slot.day_of_week < 0 or slot.day_of_week > 6:
+            continue
+        end_time = slot.end_time or default_lesson_end(slot.start_time)
+        for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
+            specs[(session_date, "math")] = {
+                "start_time": slot.start_time,
+                "end_time": end_time,
+                "teacher_id": class_obj.math_teacher_id,
+                "topic": "Math lesson",
+            }
+
+    for slot in mock_slots:
+        if slot.day_of_week < 0 or slot.day_of_week > 6:
+            continue
+        end_time = slot.end_time or default_mock_end(slot.start_time)
+        for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
+            specs[(session_date, "mock")] = {
+                "start_time": slot.start_time,
+                "end_time": end_time,
+                "teacher_id": None,
+                "topic": "Mock test and review",
+            }
+
+    return specs
+
+
+def apply_class_schedule_for_range(
+    db: Session,
+    class_obj: Class,
+    from_date,
+    to_date,
+    verbal_slots,
+    math_slots,
+    mock_slots,
+) -> tuple[int, int, int]:
+    specs = build_session_specs_for_range(
+        class_obj,
+        from_date,
+        to_date,
+        verbal_slots,
+        math_slots,
+        mock_slots,
+    )
+
+    existing = (
+        db.query(ClassSession)
+        .filter(
+            ClassSession.class_id == class_obj.id,
+            ClassSession.date >= from_date,
+            ClassSession.date <= to_date,
+            ClassSession.session_type.in_(["verbal", "math", "mock"]),
+        )
+        .all()
+    )
+    existing_by_key = {(session.date, session.session_type): session for session in existing}
+
+    created = 0
+    updated = 0
+    deleted = 0
+
+    for key, spec in specs.items():
+        session_date, session_type = key
+        if key in existing_by_key:
+            session = existing_by_key[key]
+            session.start_time = spec["start_time"]
+            session.end_time = spec["end_time"]
+            session.teacher_id = spec["teacher_id"]
+            session.topic = spec["topic"]
+            ensure_mock_assignments_for_session(db, session)
+            updated += 1
+            continue
+
+        new_session = ClassSession(
+            class_id=class_obj.id,
+            teacher_id=spec["teacher_id"],
+            date=session_date,
+            start_time=spec["start_time"],
+            end_time=spec["end_time"],
+            session_type=session_type,
+            topic=spec["topic"],
+            academic_plan_item_id=None,
+        )
+        db.add(new_session)
+        db.flush()
+        ensure_mock_assignments_for_session(db, new_session)
+        created += 1
+
+    for session in existing:
+        key = (session.date, session.session_type)
+        if key not in specs:
+            db.delete(session)
+            deleted += 1
+
+    return created, updated, deleted
 
 
 def iter_weekday_occurrences(start_date, weeks: int, weekday: int):
@@ -404,6 +533,57 @@ def create_class(
         "start_date": data.start_date,
         "schedule_weeks": data.schedule_weeks,
         "sessions_created": len(sessions)
+    }
+
+
+@router.put("/{class_id}/schedule")
+def update_class_schedule(
+    class_id: int,
+    data: UpdateClassScheduleData,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["admin", "mentor"])),
+):
+    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Class not found")
+
+    if data.from_date > data.to_date:
+        raise HTTPException(
+            status_code=400,
+            detail="from_date must be on or before to_date",
+        )
+
+    verbal_slots = list(data.verbal_schedule or [])
+    math_slots = list(data.math_schedule or [])
+    mock_slots = list(data.mock_schedule or [])
+    if not verbal_slots and not math_slots and not mock_slots:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one verbal, math, or mock schedule slot is required",
+        )
+
+    created, updated, deleted = apply_class_schedule_for_range(
+        db,
+        class_obj,
+        data.from_date,
+        data.to_date,
+        verbal_slots,
+        math_slots,
+        mock_slots,
+    )
+    db.commit()
+
+    return {
+        "message": (
+            f"Schedule updated: {created} created, {updated} updated, "
+            f"{deleted} removed"
+        ),
+        "class_id": class_id,
+        "from_date": data.from_date,
+        "to_date": data.to_date,
+        "created": created,
+        "updated": updated,
+        "deleted": deleted,
     }
 
 
