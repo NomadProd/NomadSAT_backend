@@ -57,6 +57,97 @@ def slot_is_free(db: Session, session_id: int, student_id: int, slot_index: int)
     return existing is None
 
 
+def assignment_is_empty(assignment: Assignment) -> bool:
+    if (assignment.instruction or "").strip():
+        return False
+    if (assignment.task_link or "").strip():
+        return False
+    if assignment.due_date is not None:
+        return False
+    return True
+
+
+def get_assignment_at_slot(
+    db: Session, session_id: int, student_id: int, slot_index: int
+) -> Assignment | None:
+    return (
+        db.query(Assignment)
+        .filter(
+            Assignment.session_id == session_id,
+            Assignment.student_id == student_id,
+            Assignment.slot_index == slot_index,
+        )
+        .first()
+    )
+
+
+def find_copy_target_slot(
+    db: Session, session_id: int, student_id: int
+) -> tuple[int | None, Assignment | None]:
+    """First slot with no assignment or an empty placeholder; reuse empty rows."""
+    for slot in range(1, MAX_HOMEWORK_SLOTS + 1):
+        existing = get_assignment_at_slot(db, session_id, student_id, slot)
+        if existing is None:
+            return slot, None
+        if assignment_is_empty(existing):
+            return slot, existing
+
+    unslotted = (
+        db.query(Assignment)
+        .filter(
+            Assignment.session_id == session_id,
+            Assignment.student_id == student_id,
+            Assignment.slot_index.is_(None),
+        )
+        .all()
+    )
+    for existing in unslotted:
+        if not assignment_is_empty(existing):
+            continue
+        for slot in range(1, MAX_HOMEWORK_SLOTS + 1):
+            if get_assignment_at_slot(db, session_id, student_id, slot) is None:
+                existing.slot_index = slot
+                return slot, existing
+
+    return None, None
+
+
+def apply_copy_to_target(
+    db: Session,
+    source: Assignment,
+    session_id: int,
+    student_id: int,
+    slot_index: int,
+    overwrite: Assignment | None,
+) -> Assignment:
+    title = source.title or f"Homework {slot_index}"
+    if overwrite is not None:
+        overwrite.slot_index = slot_index
+        overwrite.title = title
+        overwrite.instruction = source.instruction
+        overwrite.task_link = source.task_link
+        overwrite.due_date = source.due_date
+        overwrite.due_time = source.due_time
+        overwrite.photo_required = source.photo_required
+        db.flush()
+        return overwrite
+
+    new_assignment = Assignment(
+        session_id=session_id,
+        student_id=student_id,
+        slot_index=slot_index,
+        title=title,
+        instruction=source.instruction,
+        task_link=source.task_link,
+        due_date=source.due_date,
+        due_time=source.due_time,
+        photo_required=source.photo_required,
+    )
+    db.add(new_assignment)
+    db.flush()
+    return new_assignment
+
+
 @router.post("/sessions/{session_id}")
 def create_assignment_for_session(
     session_id: int,
@@ -242,6 +333,7 @@ def copy_assignment(
             skipped.append({"student_id": student_id, "reason": "NOT_ENROLLED"})
             continue
 
+        overwrite: Assignment | None = None
         if data.target_slot_index is not None:
             slot_index = data.target_slot_index
             if not (1 <= slot_index <= MAX_HOMEWORK_SLOTS):
@@ -249,34 +341,35 @@ def copy_assignment(
                     {"student_id": student_id, "reason": "INVALID_SLOT"}
                 )
                 continue
-            if not slot_is_free(db, target_session_id, student_id, slot_index):
+            existing = get_assignment_at_slot(
+                db, target_session_id, student_id, slot_index
+            )
+            if existing is not None and not assignment_is_empty(existing):
                 skipped.append({"student_id": student_id, "reason": "SLOT_OCCUPIED"})
                 continue
+            overwrite = existing
         else:
-            slot_index = next_free_homework_slot(db, target_session_id, student_id)
+            slot_index, overwrite = find_copy_target_slot(
+                db, target_session_id, student_id
+            )
             if slot_index is None:
                 skipped.append({"student_id": student_id, "reason": "NO_FREE_SLOT"})
                 continue
 
-        title = source.title or f"Homework {slot_index}"
-        new_assignment = Assignment(
-            session_id=target_session_id,
-            student_id=student_id,
-            slot_index=slot_index,
-            title=title,
-            instruction=source.instruction,
-            task_link=source.task_link,
-            due_date=source.due_date,
-            due_time=source.due_time,
-            photo_required=source.photo_required,
+        target_assignment = apply_copy_to_target(
+            db,
+            source,
+            target_session_id,
+            student_id,
+            slot_index,
+            overwrite,
         )
-        db.add(new_assignment)
-        db.flush()
         created.append(
             {
                 "student_id": student_id,
-                "assignment_id": new_assignment.id,
+                "assignment_id": target_assignment.id,
                 "slot_index": slot_index,
+                "updated": overwrite is not None,
             }
         )
 
