@@ -20,12 +20,21 @@ class UpdateUserData(BaseModel):
     surname: Optional[str] = None
     role: Optional[str] = None
 
+class WeeklyLessonSlot(BaseModel):
+    day_of_week: int  # 0=Monday … 6=Sunday (Python weekday)
+    start_time: dt.time
+    end_time: Optional[dt.time] = None
+
 class CreateClassData(BaseModel):
     name: str
     verbal_teacher_id: int
     math_teacher_id: int
-    schedule_template: Optional[str] = None
     start_date: Optional[dt.date] = None
+    schedule_weeks: Optional[int] = 4
+    verbal_schedule: Optional[List[WeeklyLessonSlot]] = None
+    math_schedule: Optional[List[WeeklyLessonSlot]] = None
+    mock_schedule: Optional[List[WeeklyLessonSlot]] = None
+    schedule_template: Optional[str] = None
 
 class UpdateClassData(BaseModel):
     name: Optional[str] = None

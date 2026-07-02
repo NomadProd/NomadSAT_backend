@@ -1,4 +1,4 @@
-from datetime import time, timedelta
+from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -171,26 +171,98 @@ def serialize_session(session_obj: ClassSession, db: Session):
     }
 
 
-def build_template_sessions(data: CreateClassData, class_id: int, db: Session):
-    if data.schedule_template is None and data.start_date is None:
-        return []
+def default_lesson_end(start: time) -> time:
+    start_dt = datetime.combine(datetime.min, start)
+    end_dt = start_dt + timedelta(hours=1, minutes=30)
+    return end_dt.time()
 
-    if data.schedule_template is None or data.start_date is None:
-        raise HTTPException(
-            status_code=400,
-            detail="schedule_template and start_date must be provided together"
-        )
 
+def iter_weekday_occurrences(start_date, weeks: int, weekday: int):
+    days_ahead = (weekday - start_date.weekday()) % 7
+    session_date = start_date + timedelta(days=days_ahead)
+    end_date = start_date + timedelta(weeks=weeks)
+    while session_date < end_date:
+        yield session_date
+        session_date += timedelta(days=7)
+
+
+def default_mock_end(start: time) -> time:
+    start_dt = datetime.combine(datetime.min, start)
+    end_dt = start_dt + timedelta(hours=7, minutes=30)
+    return end_dt.time()
+
+
+def append_scheduled_mocks(
+    sessions: list,
+    *,
+    class_id: int,
+    start_date,
+    weeks: int,
+    slots,
+):
+    for slot in slots:
+        if slot.day_of_week < 0 or slot.day_of_week > 6:
+            continue
+        end_time = slot.end_time or default_mock_end(slot.start_time)
+        for session_date in iter_weekday_occurrences(
+            start_date, weeks, slot.day_of_week
+        ):
+            sessions.append(
+                ClassSession(
+                    class_id=class_id,
+                    teacher_id=None,
+                    date=session_date,
+                    start_time=slot.start_time,
+                    end_time=end_time,
+                    session_type="mock",
+                    topic="Mock test and review",
+                    academic_plan_item_id=None,
+                )
+            )
+
+
+def append_scheduled_lessons(
+    sessions: list,
+    *,
+    class_id: int,
+    start_date,
+    weeks: int,
+    slots,
+    session_type: str,
+    teacher_id: int,
+    topic: str,
+):
+    for slot in slots:
+        if slot.day_of_week < 0 or slot.day_of_week > 6:
+            continue
+        end_time = slot.end_time or default_lesson_end(slot.start_time)
+        for session_date in iter_weekday_occurrences(
+            start_date, weeks, slot.day_of_week
+        ):
+            sessions.append(
+                ClassSession(
+                    class_id=class_id,
+                    teacher_id=teacher_id,
+                    date=session_date,
+                    start_time=slot.start_time,
+                    end_time=end_time,
+                    session_type=session_type,
+                    topic=topic,
+                    academic_plan_item_id=None,
+                )
+            )
+
+
+def build_legacy_template_sessions(data: CreateClassData, class_id: int):
     template_key = data.schedule_template.lower().strip()
     template = SCHEDULE_TEMPLATES.get(template_key)
     if template is None:
         raise HTTPException(
             status_code=400,
-            detail="schedule_template must be 'intensive' or 'standard'"
+            detail="schedule_template must be 'intensive' or 'standard'",
         )
 
     sessions = []
-
     schedule_weeks = SCHEDULE_WEEKS.get(template_key, 4)
 
     for day_offset in range(schedule_weeks * 7):
@@ -216,25 +288,84 @@ def build_template_sessions(data: CreateClassData, class_id: int, db: Session):
             end_time = LESSON_END_TIME
             topic = "Math lesson"
 
-        sessions.append(ClassSession(
-            class_id=class_id,
-            teacher_id=teacher_id,
-            date=session_date,
-            start_time=start_time,
-            end_time=end_time,
-            session_type=session_type,
-            topic=topic,
-            academic_plan_item_id=academic_plan_item_ids,
-        ))
+        sessions.append(
+            ClassSession(
+                class_id=class_id,
+                teacher_id=teacher_id,
+                date=session_date,
+                start_time=start_time,
+                end_time=end_time,
+                session_type=session_type,
+                topic=topic,
+                academic_plan_item_id=academic_plan_item_ids,
+            )
+        )
 
     return sessions
+
+
+def build_template_sessions(data: CreateClassData, class_id: int, db: Session):
+    verbal_slots = list(data.verbal_schedule or [])
+    math_slots = list(data.math_schedule or [])
+    mock_slots = list(data.mock_schedule or [])
+
+    if data.start_date is None:
+        if verbal_slots or math_slots or mock_slots or data.schedule_template:
+            raise HTTPException(
+                status_code=400,
+                detail="start_date is required when creating a schedule",
+            )
+        return []
+
+    if verbal_slots or math_slots or mock_slots:
+        weeks = data.schedule_weeks or 4
+        if weeks < 1 or weeks > 52:
+            raise HTTPException(
+                status_code=400,
+                detail="schedule_weeks must be between 1 and 52",
+            )
+
+        sessions: list[ClassSession] = []
+        append_scheduled_lessons(
+            sessions,
+            class_id=class_id,
+            start_date=data.start_date,
+            weeks=weeks,
+            slots=verbal_slots,
+            session_type="verbal",
+            teacher_id=data.verbal_teacher_id,
+            topic="Verbal lesson",
+        )
+        append_scheduled_lessons(
+            sessions,
+            class_id=class_id,
+            start_date=data.start_date,
+            weeks=weeks,
+            slots=math_slots,
+            session_type="math",
+            teacher_id=data.math_teacher_id,
+            topic="Math lesson",
+        )
+        append_scheduled_mocks(
+            sessions,
+            class_id=class_id,
+            start_date=data.start_date,
+            weeks=weeks,
+            slots=mock_slots,
+        )
+        return sessions
+
+    if data.schedule_template is None:
+        return []
+
+    return build_legacy_template_sessions(data, class_id)
 
 
 @router.post("/")
 def create_class(
     data: CreateClassData,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin"]))
+    current_user: User = Depends(require_roles(["admin", "mentor"]))
 ):
     verbal_teacher = db.query(User).filter(
         User.id == data.verbal_teacher_id,
@@ -270,8 +401,8 @@ def create_class(
         "name": new_class.name,
         "verbal_teacher_id": new_class.verbal_teacher_id,
         "math_teacher_id": new_class.math_teacher_id,
-        "schedule_template": data.schedule_template,
         "start_date": data.start_date,
+        "schedule_weeks": data.schedule_weeks,
         "sessions_created": len(sessions)
     }
 
