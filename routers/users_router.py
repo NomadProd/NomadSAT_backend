@@ -27,8 +27,8 @@ def create_user(
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
 
-    if current_user.role == "mentor" and role not in ["teacher", "student"]:
-        raise HTTPException(status_code=403, detail="Mentors can create only teachers or students")
+    if current_user.role == "mentor" and role != "student":
+        raise HTTPException(status_code=403, detail="Mentors can create only students")
 
     existing_user = db.query(User).filter(User.email == user_data.email).first()
     if existing_user:
@@ -66,11 +66,18 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if current_user.role == "student" and current_user.id != user_id:
+    actor_role = normalize_role(current_user.role)
+    target_role = normalize_role(user.role)
+
+    if actor_role == "student" and current_user.id != user_id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    if current_user.role == "teacher":
-        if user.role != "student":
+    if actor_role == "mentor":
+        if target_role != "student":
+            raise HTTPException(status_code=403, detail="Mentors can edit only students")
+
+    if actor_role == "teacher":
+        if target_role != "student":
             raise HTTPException(status_code=403, detail="Teachers can edit only students")
 
     if user_data.email is not None:

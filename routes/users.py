@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user, normalize_role, require_admin, require_staff
+from dependencies.auth import AuthUser, get_current_user, normalize_role, require_admin, require_admin_or_mentor, require_staff
 from Methods.auth import get_db
 from models import (
     Assignment,
@@ -43,7 +43,7 @@ def get_current_user_profile(
 @router.get("/users/all")
 def list_users_legacy(
     db: Session = Depends(get_db),
-    current_user: AuthUser = Depends(require_admin),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
 ):
     users = db.query(User).order_by(User.id.asc()).all()
     return [serialize_user(user) for user in users]
@@ -52,7 +52,7 @@ def list_users_legacy(
 @router.get("/users")
 def list_users(
     db: Session = Depends(get_db),
-    current_user: AuthUser = Depends(require_admin),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
 ):
     users = db.query(User).order_by(User.id.asc()).all()
     return [serialize_user(user) for user in users]
@@ -146,7 +146,7 @@ def delete_user(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    if normalize_role(current_user.role) != "admin":
+    if normalize_role(current_user.role) not in ("admin", "mentor"):
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
     if current_user.id == user_id:
@@ -161,6 +161,14 @@ def delete_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    actor_role = normalize_role(current_user.role)
+    target_role = normalize_role(user.role)
+    if actor_role == "mentor" and target_role != "student":
+        raise HTTPException(
+            status_code=403,
+            detail="Mentors can delete only students",
+        )
 
     try:
         delete_user_dependents(db, user_id)
