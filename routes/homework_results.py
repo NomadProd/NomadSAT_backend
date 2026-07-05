@@ -52,7 +52,8 @@ from services.cloudinary_service import (
 router = APIRouter(tags=["homework-results"])
 
 MAX_FILES = 10
-MAX_FILE_SIZE_BYTES = 52_428_800
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+MAX_FILE_SIZE_MESSAGE = "File size cannot exceed 10mb"
 ALLOWED_CONTENT_TYPES = {
     "image/jpeg",
     "image/png",
@@ -227,7 +228,8 @@ async def validate_upload_files(files: list[UploadFile]) -> list[dict] | JSONRes
                 {
                     "error": "FILE_TOO_LARGE",
                     "filename": filename,
-                    "max_mb": 50,
+                    "max_mb": 10,
+                    "detail": MAX_FILE_SIZE_MESSAGE,
                 }
             )
 
