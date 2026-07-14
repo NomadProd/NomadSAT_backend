@@ -144,7 +144,7 @@ class Attendance(Base):
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    status = Column(Boolean, default=False, nullable=False)
+    status = Column(String(16), default="absent", nullable=False)
 
     session = relationship("Session", back_populates="attendances")
     student = relationship("User", back_populates="attendances")

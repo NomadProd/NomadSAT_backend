@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 import datetime as dt
 
@@ -91,9 +91,23 @@ class UpdateSessionAcademicPlanData(BaseModel):
     lesson_notes: Optional[str] = None
     date: Optional[dt.date] = None
 
+ATTENDANCE_STATUSES = ("present", "absent", "excused")
+
+
 class AttendanceRecordData(BaseModel):
     student_id: int
-    status: bool
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in ATTENDANCE_STATUSES:
+            raise ValueError(
+                f"status must be one of: {', '.join(ATTENDANCE_STATUSES)}"
+            )
+        return normalized
+
 
 class AttendanceBulkData(BaseModel):
     records: List[AttendanceRecordData]
