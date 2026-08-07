@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -697,6 +697,9 @@ def update_class(
     if data.name is not None:
         class_obj.name = data.name
 
+    verbal_changed = False
+    math_changed = False
+
     if data.verbal_teacher_id is not None:
         verbal_teacher = db.query(User).filter(
             User.id == data.verbal_teacher_id,
@@ -704,6 +707,8 @@ def update_class(
         ).first()
         if not verbal_teacher:
             raise HTTPException(status_code=404, detail="Verbal teacher not found")
+        if class_obj.verbal_teacher_id != data.verbal_teacher_id:
+            verbal_changed = True
         class_obj.verbal_teacher_id = data.verbal_teacher_id
 
     if data.math_teacher_id is not None:
@@ -713,10 +718,32 @@ def update_class(
         ).first()
         if not math_teacher:
             raise HTTPException(status_code=404, detail="Math teacher not found")
+        if class_obj.math_teacher_id != data.math_teacher_id:
+            math_changed = True
         class_obj.math_teacher_id = data.math_teacher_id
 
     if data.archived is not None:
         class_obj.archived = data.archived
+
+    sessions_updated = 0
+    if verbal_changed or math_changed:
+        today = date.today()
+        future_sessions = (
+            db.query(ClassSession)
+            .filter(
+                ClassSession.class_id == class_id,
+                ClassSession.date >= today,
+            )
+            .all()
+        )
+        for session in future_sessions:
+            session_type = (session.session_type or "").strip().lower()
+            if verbal_changed and session_type == "verbal":
+                session.teacher_id = class_obj.verbal_teacher_id
+                sessions_updated += 1
+            elif math_changed and session_type == "math":
+                session.teacher_id = class_obj.math_teacher_id
+                sessions_updated += 1
 
     db.commit()
     db.refresh(class_obj)
@@ -728,6 +755,7 @@ def update_class(
         "verbal_teacher_id": class_obj.verbal_teacher_id,
         "math_teacher_id": class_obj.math_teacher_id,
         "archived": bool(class_obj.archived),
+        "sessions_updated": sessions_updated,
     }
 
 
