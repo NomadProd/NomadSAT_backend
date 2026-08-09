@@ -22,6 +22,7 @@ class MockResultSchema(BaseModel):
     assignment_id: int
     student_id: int
     submitted: bool
+    submitted_at: Optional[datetime] = None
     total_points: Optional[int] = None
     verbal_points: Optional[int] = None
     math_points: Optional[int] = None

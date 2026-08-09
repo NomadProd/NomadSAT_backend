@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.datastructures import UploadFile
@@ -258,6 +258,7 @@ async def create_mock_result(
         assignment_id=assignment_id,
         student_id=student_id,
         submitted=payload["submitted"],
+        submitted_at=datetime.now(timezone.utc) if payload["submitted"] else None,
         total_points=total_points,
         verbal_points=payload["verbal_points"],
         math_points=payload["math_points"],
@@ -330,6 +331,11 @@ async def update_mock_result(
 
     if payload["submitted"] is not None:
         result.submitted = payload["submitted"]
+        if payload["submitted"]:
+            if result.submitted_at is None:
+                result.submitted_at = datetime.now(timezone.utc)
+        else:
+            result.submitted_at = None
     if payload["verbal_points"] is not None:
         result.verbal_points = payload["verbal_points"]
     if payload["math_points"] is not None:

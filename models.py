@@ -222,6 +222,7 @@ class MockResult(Base):
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     submitted = Column(Boolean, default=False, nullable=False)
+    submitted_at = Column(DateTime, nullable=True)
 
     total_points = Column(Integer, nullable=True)
     verbal_points = Column(Integer, nullable=True)

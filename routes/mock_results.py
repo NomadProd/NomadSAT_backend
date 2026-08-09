@@ -29,6 +29,7 @@ def serialize_mock_result(result: MockResult) -> dict:
         assignment_id=result.assignment_id,
         student_id=result.student_id,
         submitted=result.submitted,
+        submitted_at=result.submitted_at,
         total_points=result.total_points,
         verbal_points=result.verbal_points,
         math_points=result.math_points,
