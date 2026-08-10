@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user, require_staff
+from dependencies.auth import AuthUser, get_current_user, is_admin_or_mentor
 from dependencies.filters import attendance_query, sessions_query
 from models import Attendance, Session as ClassSession, User, Class, ClassEnrollment
 from Methods.auth import get_db, require_roles
@@ -24,6 +24,10 @@ def submit_or_update_attendance(
     class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
+
+    session_type = (session_obj.session_type or "").strip().lower()
+    if session_type == "review" and not is_admin_or_mentor(current_user.role):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
 
     if current_user.role == "teacher":
         allowed_teacher_ids = [class_obj.verbal_teacher_id, class_obj.math_teacher_id]

@@ -54,6 +54,7 @@ def serialize_session(session_obj: ClassSession) -> dict:
         "start_time": session_obj.start_time,
         "end_time": session_obj.end_time,
         "session_type": session_obj.session_type,
+        "subject": getattr(session_obj, "subject", None),
         "topic": session_obj.topic,
         "lesson_notes": session_obj.lesson_notes,
     }

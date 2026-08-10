@@ -153,7 +153,13 @@ def get_plan_item_or_404(plan_item_id: int, db: Session):
 
 
 def get_subject_fallback(session_obj: ClassSession):
+    if session_obj.subject:
+        fallback_subject = session_obj.subject.strip().lower()
+        if fallback_subject:
+            return fallback_subject
     fallback_subject = (session_obj.session_type or "verbal").strip().lower()
+    if fallback_subject == "review":
+        return "verbal"
     return fallback_subject or "verbal"
 
 

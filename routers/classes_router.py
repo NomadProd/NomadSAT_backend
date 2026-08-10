@@ -164,6 +164,7 @@ def serialize_session(session_obj: ClassSession, db: Session):
         "start_time": session_obj.start_time,
         "end_time": session_obj.end_time,
         "session_type": session_obj.session_type,
+        "subject": session_obj.subject,
         "topic": session_obj.topic,
         "academic_plan_item_id": plan_item_ids[0] if plan_item_ids else None,
         "academic_plan_item_ids": plan_item_ids,
@@ -195,6 +196,8 @@ def build_session_specs_for_range(
     verbal_slots,
     math_slots,
     mock_slots,
+    verbal_review_slots=None,
+    math_review_slots=None,
 ) -> dict[tuple, dict]:
     specs: dict[tuple, dict] = {}
 
@@ -203,11 +206,12 @@ def build_session_specs_for_range(
             continue
         end_time = slot.end_time or default_lesson_end(slot.start_time)
         for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
-            specs[(session_date, "verbal")] = {
+            specs[(session_date, "verbal", None)] = {
                 "start_time": slot.start_time,
                 "end_time": end_time,
                 "teacher_id": class_obj.verbal_teacher_id,
                 "topic": "Verbal lesson",
+                "subject": None,
             }
 
     for slot in math_slots:
@@ -215,11 +219,12 @@ def build_session_specs_for_range(
             continue
         end_time = slot.end_time or default_lesson_end(slot.start_time)
         for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
-            specs[(session_date, "math")] = {
+            specs[(session_date, "math", None)] = {
                 "start_time": slot.start_time,
                 "end_time": end_time,
                 "teacher_id": class_obj.math_teacher_id,
                 "topic": "Math lesson",
+                "subject": None,
             }
 
     for slot in mock_slots:
@@ -227,14 +232,49 @@ def build_session_specs_for_range(
             continue
         end_time = slot.end_time or default_mock_end(slot.start_time)
         for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
-            specs[(session_date, "mock")] = {
+            specs[(session_date, "mock", None)] = {
                 "start_time": slot.start_time,
                 "end_time": end_time,
                 "teacher_id": None,
                 "topic": "Mock test and review",
+                "subject": None,
+            }
+
+    for slot in verbal_review_slots or []:
+        if slot.day_of_week < 0 or slot.day_of_week > 6:
+            continue
+        end_time = slot.end_time or default_lesson_end(slot.start_time)
+        for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
+            specs[(session_date, "review", "verbal")] = {
+                "start_time": slot.start_time,
+                "end_time": end_time,
+                "teacher_id": class_obj.verbal_teacher_id,
+                "topic": "Verbal review",
+                "subject": "verbal",
+            }
+
+    for slot in math_review_slots or []:
+        if slot.day_of_week < 0 or slot.day_of_week > 6:
+            continue
+        end_time = slot.end_time or default_lesson_end(slot.start_time)
+        for session_date in iter_weekday_in_range(from_date, to_date, slot.day_of_week):
+            specs[(session_date, "review", "math")] = {
+                "start_time": slot.start_time,
+                "end_time": end_time,
+                "teacher_id": class_obj.math_teacher_id,
+                "topic": "Math review",
+                "subject": "math",
             }
 
     return specs
+
+
+def session_schedule_key(session: ClassSession) -> tuple:
+    session_type = (session.session_type or "").strip().lower()
+    if session_type == "review":
+        subject = (session.subject or "").strip().lower() or None
+        return (session.date, "review", subject)
+    return (session.date, session_type, None)
 
 
 def apply_class_schedule_for_range(
@@ -245,6 +285,8 @@ def apply_class_schedule_for_range(
     verbal_slots,
     math_slots,
     mock_slots,
+    verbal_review_slots=None,
+    math_review_slots=None,
 ) -> tuple[int, int, int]:
     specs = build_session_specs_for_range(
         class_obj,
@@ -253,6 +295,8 @@ def apply_class_schedule_for_range(
         verbal_slots,
         math_slots,
         mock_slots,
+        verbal_review_slots=verbal_review_slots,
+        math_review_slots=math_review_slots,
     )
 
     existing = (
@@ -261,28 +305,29 @@ def apply_class_schedule_for_range(
             ClassSession.class_id == class_obj.id,
             ClassSession.date >= from_date,
             ClassSession.date <= to_date,
-            ClassSession.session_type.in_(["verbal", "math", "mock"]),
+            ClassSession.session_type.in_(["verbal", "math", "mock", "review"]),
         )
         .all()
     )
-    existing_by_key = {(session.date, session.session_type): session for session in existing}
+    existing_by_key = {session_schedule_key(session): session for session in existing}
 
     created = 0
     updated = 0
     deleted = 0
 
     for key, spec in specs.items():
-        session_date, session_type = key
         if key in existing_by_key:
             session = existing_by_key[key]
             session.start_time = spec["start_time"]
             session.end_time = spec["end_time"]
             session.teacher_id = spec["teacher_id"]
             session.topic = spec["topic"]
+            session.subject = spec["subject"]
             ensure_mock_assignments_for_session(db, session)
             updated += 1
             continue
 
+        session_date, session_type, _subject = key
         new_session = ClassSession(
             class_id=class_obj.id,
             teacher_id=spec["teacher_id"],
@@ -290,6 +335,7 @@ def apply_class_schedule_for_range(
             start_time=spec["start_time"],
             end_time=spec["end_time"],
             session_type=session_type,
+            subject=spec["subject"],
             topic=spec["topic"],
             academic_plan_item_id=None,
         )
@@ -299,7 +345,7 @@ def apply_class_schedule_for_range(
         created += 1
 
     for session in existing:
-        key = (session.date, session.session_type)
+        key = session_schedule_key(session)
         if key not in specs:
             db.delete(session)
             deleted += 1
@@ -361,6 +407,7 @@ def append_scheduled_lessons(
     session_type: str,
     teacher_id: int,
     topic: str,
+    subject: str | None = None,
 ):
     for slot in slots:
         if slot.day_of_week < 0 or slot.day_of_week > 6:
@@ -377,6 +424,7 @@ def append_scheduled_lessons(
                     start_time=slot.start_time,
                     end_time=end_time,
                     session_type=session_type,
+                    subject=subject,
                     topic=topic,
                     academic_plan_item_id=None,
                 )
@@ -426,6 +474,7 @@ def build_legacy_template_sessions(data: CreateClassData, class_id: int):
                 start_time=start_time,
                 end_time=end_time,
                 session_type=session_type,
+                subject=None,
                 topic=topic,
                 academic_plan_item_id=academic_plan_item_ids,
             )
@@ -438,16 +487,31 @@ def build_template_sessions(data: CreateClassData, class_id: int, db: Session):
     verbal_slots = list(data.verbal_schedule or [])
     math_slots = list(data.math_schedule or [])
     mock_slots = list(data.mock_schedule or [])
+    verbal_review_slots = list(data.verbal_review_schedule or [])
+    math_review_slots = list(data.math_review_schedule or [])
 
     if data.start_date is None:
-        if verbal_slots or math_slots or mock_slots or data.schedule_template:
+        if (
+            verbal_slots
+            or math_slots
+            or mock_slots
+            or verbal_review_slots
+            or math_review_slots
+            or data.schedule_template
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="start_date is required when creating a schedule",
             )
         return []
 
-    if verbal_slots or math_slots or mock_slots:
+    if (
+        verbal_slots
+        or math_slots
+        or mock_slots
+        or verbal_review_slots
+        or math_review_slots
+    ):
         weeks = data.schedule_weeks or 4
         if weeks < 1 or weeks > 52:
             raise HTTPException(
@@ -482,6 +546,28 @@ def build_template_sessions(data: CreateClassData, class_id: int, db: Session):
             start_date=data.start_date,
             weeks=weeks,
             slots=mock_slots,
+        )
+        append_scheduled_lessons(
+            sessions,
+            class_id=class_id,
+            start_date=data.start_date,
+            weeks=weeks,
+            slots=verbal_review_slots,
+            session_type="review",
+            teacher_id=data.verbal_teacher_id,
+            topic="Verbal review",
+            subject="verbal",
+        )
+        append_scheduled_lessons(
+            sessions,
+            class_id=class_id,
+            start_date=data.start_date,
+            weeks=weeks,
+            slots=math_review_slots,
+            session_type="review",
+            teacher_id=data.math_teacher_id,
+            topic="Math review",
+            subject="math",
         )
         return sessions
 
@@ -557,10 +643,18 @@ def update_class_schedule(
     verbal_slots = list(data.verbal_schedule or [])
     math_slots = list(data.math_schedule or [])
     mock_slots = list(data.mock_schedule or [])
-    if not verbal_slots and not math_slots and not mock_slots:
+    verbal_review_slots = list(data.verbal_review_schedule or [])
+    math_review_slots = list(data.math_review_schedule or [])
+    if (
+        not verbal_slots
+        and not math_slots
+        and not mock_slots
+        and not verbal_review_slots
+        and not math_review_slots
+    ):
         raise HTTPException(
             status_code=400,
-            detail="At least one verbal, math, or mock schedule slot is required",
+            detail="At least one verbal, math, mock, or review schedule slot is required",
         )
 
     created, updated, deleted = apply_class_schedule_for_range(
@@ -571,6 +665,8 @@ def update_class_schedule(
         verbal_slots,
         math_slots,
         mock_slots,
+        verbal_review_slots=verbal_review_slots,
+        math_review_slots=math_review_slots,
     )
     db.commit()
 
@@ -725,10 +821,17 @@ def update_class(
         )
         for session in future_sessions:
             session_type = (session.session_type or "").strip().lower()
-            if verbal_changed and session_type == "verbal":
+            session_subject = (session.subject or "").strip().lower()
+            if verbal_changed and (
+                session_type == "verbal"
+                or (session_type == "review" and session_subject == "verbal")
+            ):
                 session.teacher_id = class_obj.verbal_teacher_id
                 sessions_updated += 1
-            elif math_changed and session_type == "math":
+            elif math_changed and (
+                session_type == "math"
+                or (session_type == "review" and session_subject == "math")
+            ):
                 session.teacher_id = class_obj.math_teacher_id
                 sessions_updated += 1
 

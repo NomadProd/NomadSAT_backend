@@ -106,6 +106,7 @@ class Session(Base):
     end_time = Column(Time, nullable=True)
 
     session_type = Column(String, nullable=False)
+    subject = Column(String, nullable=True)
     topic = Column(String, nullable=True)
     academic_plan_item_id = Column(ARRAY(Integer), nullable=True)
     lesson_notes = Column(Text, nullable=True)

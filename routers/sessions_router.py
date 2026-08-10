@@ -1,12 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from dependencies.auth import AuthUser, get_current_user, is_admin_or_mentor
+from dependencies.auth import AuthUser, get_current_user
 from dependencies.filters import classes_query, sessions_query
 from models import AcademicPlanItem, Class, Session as ClassSession, User
 from mock_assignments import ensure_mock_assignments_for_session
-from Methods.auth import get_db, require_roles
-from schemas import CreateSessionData, UpdateSessionData
+from Methods.auth import get_db, normalize_role, require_roles
+from schemas import REVIEW_SUBJECTS, CreateSessionData, UpdateSessionData
 
 router = APIRouter(tags=["sessions"])
 
@@ -89,12 +89,55 @@ def serialize_session(session_obj: ClassSession, db: Session):
         "start_time": session_obj.start_time,
         "end_time": session_obj.end_time,
         "session_type": session_obj.session_type,
+        "subject": session_obj.subject,
         "topic": session_obj.topic,
         "academic_plan_item_id": plan_item_ids[0] if plan_item_ids else None,
         "academic_plan_item_ids": plan_item_ids,
         "academic_plan_items": [serialize_academic_plan_item(plan_item) for plan_item in plan_items],
         "lesson_notes": session_obj.lesson_notes,
     }
+
+
+def is_admin_or_mentor_user(user: User) -> bool:
+    return normalize_role(user.role) in ("admin", "mentor")
+
+
+def resolve_review_subject(
+    *,
+    session_type: str | None,
+    subject: str | None,
+    existing_subject: str | None = None,
+) -> str | None:
+    normalized_type = (session_type or "").strip().lower()
+    if normalized_type != "review":
+        return None
+
+    resolved = subject if subject is not None else existing_subject
+    if resolved not in REVIEW_SUBJECTS:
+        raise HTTPException(
+            status_code=400,
+            detail="subject must be 'verbal' or 'math' for review sessions",
+        )
+    return resolved
+
+
+def default_teacher_id_for_session(
+    class_obj: Class,
+    session_type: str,
+    subject: str | None,
+) -> int | None:
+    if session_type == "verbal":
+        return class_obj.verbal_teacher_id
+    if session_type == "math":
+        return class_obj.math_teacher_id
+    if session_type == "mock":
+        return None
+    if session_type == "review":
+        if subject == "verbal":
+            return class_obj.verbal_teacher_id
+        if subject == "math":
+            return class_obj.math_teacher_id
+    return None
 
 
 @router.post("/classes/{class_id}/sessions")
@@ -108,20 +151,26 @@ def create_session(
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
+    if data.session_type == "review" and not is_admin_or_mentor_user(current_user):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
     if current_user.role == "teacher":
         allowed_teacher_ids = [class_obj.verbal_teacher_id, class_obj.math_teacher_id]
         if current_user.id not in allowed_teacher_ids:
             raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    teacher_id = data.teacher_id
+    subject = resolve_review_subject(
+        session_type=data.session_type,
+        subject=data.subject,
+    )
 
+    teacher_id = data.teacher_id
     if teacher_id is None:
-        if data.session_type == "verbal":
-            teacher_id = class_obj.verbal_teacher_id
-        elif data.session_type == "math":
-            teacher_id = class_obj.math_teacher_id
-        elif data.session_type == "mock":
-            teacher_id = None
+        teacher_id = default_teacher_id_for_session(
+            class_obj,
+            data.session_type,
+            subject,
+        )
 
     if teacher_id is not None:
         teacher = db.query(User).filter(
@@ -141,6 +190,7 @@ def create_session(
         start_time=data.start_time,
         end_time=data.end_time,
         session_type=data.session_type,
+        subject=subject,
         topic=data.topic,
         academic_plan_item_id=requested_plan_item_ids or None,
         lesson_notes=data.lesson_notes
@@ -161,6 +211,7 @@ def create_session(
 @router.get("/classes/{class_id}/sessions")
 def get_class_sessions(
     class_id: int,
+    session_type: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
@@ -168,11 +219,14 @@ def get_class_sessions(
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
-    sessions = (
+    query = (
         sessions_query(db, current_user)
         .filter(ClassSession.class_id == class_id)
-        .all()
     )
+    if session_type:
+        query = query.filter(ClassSession.session_type == session_type.strip().lower())
+
+    sessions = query.all()
 
     return [serialize_session(session_obj, db) for session_obj in sessions]
 
@@ -192,6 +246,12 @@ def update_session(
     class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
+
+    current_type = (session_obj.session_type or "").strip().lower()
+    next_type = data.session_type if data.session_type is not None else current_type
+    touches_review = current_type == "review" or next_type == "review"
+    if touches_review and not is_admin_or_mentor_user(current_user):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
 
     if current_user.role == "teacher":
         allowed_teacher_ids = [class_obj.verbal_teacher_id, class_obj.math_teacher_id]
@@ -218,6 +278,13 @@ def update_session(
 
     if data.session_type is not None:
         session_obj.session_type = data.session_type
+
+    if field_was_sent(data, "subject") or data.session_type is not None:
+        session_obj.subject = resolve_review_subject(
+            session_type=next_type,
+            subject=data.subject if field_was_sent(data, "subject") else session_obj.subject,
+            existing_subject=session_obj.subject,
+        )
 
     if data.topic is not None:
         session_obj.topic = data.topic
@@ -249,8 +316,6 @@ def delete_session(
     session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")
-
-    class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
 
     db.delete(session_obj)
     db.commit()

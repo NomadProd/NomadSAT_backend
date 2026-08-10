@@ -34,6 +34,8 @@ class CreateClassData(BaseModel):
     verbal_schedule: Optional[List[WeeklyLessonSlot]] = None
     math_schedule: Optional[List[WeeklyLessonSlot]] = None
     mock_schedule: Optional[List[WeeklyLessonSlot]] = None
+    verbal_review_schedule: Optional[List[WeeklyLessonSlot]] = None
+    math_review_schedule: Optional[List[WeeklyLessonSlot]] = None
     schedule_template: Optional[str] = None
 
 class UpdateClassScheduleData(BaseModel):
@@ -42,6 +44,8 @@ class UpdateClassScheduleData(BaseModel):
     verbal_schedule: Optional[List[WeeklyLessonSlot]] = None
     math_schedule: Optional[List[WeeklyLessonSlot]] = None
     mock_schedule: Optional[List[WeeklyLessonSlot]] = None
+    verbal_review_schedule: Optional[List[WeeklyLessonSlot]] = None
+    math_review_schedule: Optional[List[WeeklyLessonSlot]] = None
 
 class UpdateClassData(BaseModel):
     name: Optional[str] = None
@@ -52,16 +56,43 @@ class UpdateClassData(BaseModel):
 class EnrollmentData(BaseModel):
     student_id: int
 
+REVIEW_SUBJECTS = ("verbal", "math")
+
+
+def normalize_review_subject(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
 class CreateSessionData(BaseModel):
     date: dt.date
     start_time: Optional[dt.time] = None
     end_time: Optional[dt.time] = None
     session_type: str
+    subject: Optional[str] = None
     teacher_id: Optional[int] = None
     topic: Optional[str] = None
     academic_plan_item_id: Optional[int] = None
     academic_plan_item_ids: Optional[List[int]] = None
     lesson_notes: Optional[str] = None
+
+    @field_validator("session_type")
+    @classmethod
+    def normalize_session_type(cls, value: str) -> str:
+        return (value or "").strip().lower()
+
+    @field_validator("subject")
+    @classmethod
+    def normalize_subject(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_review_subject(value)
+
+    def model_post_init(self, __context) -> None:
+        if self.session_type == "review":
+            if self.subject not in REVIEW_SUBJECTS:
+                raise ValueError("subject must be 'verbal' or 'math' for review sessions")
+
 
 class UpdateSessionData(BaseModel):
     teacher_id: Optional[int] = None
@@ -69,10 +100,23 @@ class UpdateSessionData(BaseModel):
     start_time: Optional[dt.time] = None
     end_time: Optional[dt.time] = None
     session_type: Optional[str] = None
+    subject: Optional[str] = None
     topic: Optional[str] = None
     academic_plan_item_id: Optional[int] = None
     academic_plan_item_ids: Optional[List[int]] = None
     lesson_notes: Optional[str] = None
+
+    @field_validator("session_type")
+    @classmethod
+    def normalize_session_type(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip().lower()
+
+    @field_validator("subject")
+    @classmethod
+    def normalize_subject(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_review_subject(value)
 
 class CreateSessionLessonNotesData(BaseModel):
     lesson_notes: str

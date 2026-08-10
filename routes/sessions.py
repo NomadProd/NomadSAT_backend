@@ -58,6 +58,7 @@ def serialize_session(session_obj: ClassSession, db: Session) -> dict:
         "start_time": session_obj.start_time,
         "end_time": session_obj.end_time,
         "session_type": session_obj.session_type,
+        "subject": session_obj.subject,
         "topic": session_obj.topic,
         "academic_plan_item_id": plan_item_ids[0] if plan_item_ids else None,
         "academic_plan_item_ids": plan_item_ids,
