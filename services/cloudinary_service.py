@@ -84,12 +84,79 @@ def rollback_uploads(entries: list[dict]) -> None:
             delete_file(public_id, entry.get("content_type", "image/jpeg"))
 
 
+def upload_homework_document(
+    file_bytes: bytes,
+    *,
+    assignment_id: int,
+    filename: str,
+) -> dict[str, str | int]:
+    _configure_cloudinary()
+    public_id = f"assignment_{assignment_id}_{uuid4().hex[:8]}"
+    try:
+        result = cloudinary.uploader.upload(
+            file_bytes,
+            folder="homework_documents",
+            resource_type="raw",
+            public_id=public_id,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Upload failed, rolled back",
+        ) from exc
+
+    secure_url = result.get("secure_url")
+    stored_public_id = result.get("public_id")
+    if not secure_url or not stored_public_id:
+        raise HTTPException(
+            status_code=500,
+            detail="Upload failed, rolled back",
+        )
+
+    return {
+        "url": secure_url,
+        "secure_url": secure_url,
+        "public_id": stored_public_id,
+        "filename": filename,
+        "content_type": "application/pdf",
+        "size_bytes": len(file_bytes),
+    }
+
+
+def delete_raw_file(public_id: str) -> None:
+    """Delete a raw Cloudinary asset. Logs errors but does not raise."""
+    _configure_cloudinary()
+    try:
+        result = cloudinary.uploader.destroy(public_id, resource_type="raw")
+        status = (result or {}).get("result")
+        if status == "not found":
+            logger.error(
+                "Cloudinary delete: file already missing public_id=%s",
+                public_id,
+            )
+        elif status not in {"ok", None}:
+            logger.error(
+                "Cloudinary delete unexpected result public_id=%s result=%s",
+                public_id,
+                status,
+            )
+    except Exception as exc:
+        logger.error(
+            "Cloudinary delete failed for public_id=%s: %s",
+            public_id,
+            exc,
+            exc_info=True,
+        )
+
+
 def delete_file(public_id: str, content_type: str) -> None:
     """Delete a Cloudinary asset. Logs errors but does not raise."""
+    if content_type == "application/pdf":
+        delete_raw_file(public_id)
+        return
     _configure_cloudinary()
-    resource_type = "raw" if content_type == "application/pdf" else "image"
     try:
-        cloudinary.uploader.destroy(public_id, resource_type=resource_type)
+        cloudinary.uploader.destroy(public_id, resource_type="image")
     except Exception as exc:
         logger.error(
             "Cloudinary delete failed for public_id=%s: %s",

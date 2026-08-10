@@ -138,6 +138,21 @@ class CopyAssignmentData(BaseModel):
     session_id: Optional[int] = None
     target_slot_index: Optional[int] = None
 
+class HomeworkDocument(BaseModel):
+    url: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    uploaded_at: Optional[dt.datetime] = None
+
+class HomeworkDocumentStored(HomeworkDocument):
+    secure_url: Optional[str] = None
+    public_id: Optional[str] = None
+
+class HomeworkDocumentUploadResponse(BaseModel):
+    assignment_id: int
+    homework_document: HomeworkDocumentStored
+
 class CreateHomeworkResultData(BaseModel):
     submitted: bool = False
     photo_link: Optional[str] = None

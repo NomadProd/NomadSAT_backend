@@ -18,6 +18,7 @@ from models import (
 from dependencies.auth import AuthUser, get_current_user
 from dependencies.filters import assignments_query, homework_results_query
 from Methods.auth import get_db, require_roles
+from services.homework_document import serialize_assignment
 from routes.mock_results import serialize_mock_result_list_item
 from schemas import (
     CreateMockResultData,
@@ -57,18 +58,7 @@ def serialize_history_context(assignment: Assignment | None, db: Session):
     if session_obj:
         class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
 
-    assignment_payload = {
-        "assignment_id": assignment.id,
-        "session_id": assignment.session_id,
-        "student_id": assignment.student_id,
-        "slot_index": assignment.slot_index,
-        "title": assignment.title,
-        "instruction": assignment.instruction,
-        "task_link": assignment.task_link,
-        "due_date": assignment.due_date,
-        "due_time": assignment.due_time,
-        "photo_required": assignment.photo_required,
-    }
+    assignment_payload = serialize_assignment(assignment)
     session_payload = None
     if session_obj:
         plan_item_ids = normalize_session_plan_item_ids(

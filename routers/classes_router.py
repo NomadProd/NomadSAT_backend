@@ -11,6 +11,7 @@ from Methods.auth import get_db, require_roles
 from routes.mock_results import serialize_mock_result_list_item
 from schemas import CreateClassData, UpdateClassData, UpdateClassScheduleData, EnrollmentData
 from services.attachments import read_submission_history
+from services.homework_document import serialize_assignment
 
 router = APIRouter(prefix="/classes", tags=["classes"])
 
@@ -662,21 +663,7 @@ def get_student_home_class_details(
                 }
                 for a in attendances
             ],
-            "assignments": [
-                {
-                    "assignment_id": a.id,
-                    "session_id": a.session_id,
-                    "student_id": a.student_id,
-                    "slot_index": a.slot_index,
-                    "title": a.title,
-                    "instruction": a.instruction,
-                    "task_link": a.task_link,
-                    "due_date": a.due_date,
-                    "due_time": a.due_time,
-                    "photo_required": a.photo_required
-                }
-                for a in assignments
-            ]
+            "assignments": [serialize_assignment(a) for a in assignments]
         })
 
     return result
@@ -880,21 +867,7 @@ def get_class_full_detail(
             }
             for a in attendances
         ],
-        "assignments": [
-            {
-                "assignment_id": a.id,
-                "session_id": a.session_id,
-                "student_id": a.student_id,
-                "slot_index": a.slot_index,
-                "title": a.title,
-                "instruction": a.instruction,
-                "task_link": a.task_link,
-                "due_date": a.due_date,
-                "due_time": a.due_time,
-                "photo_required": a.photo_required
-            }
-            for a in assignments
-        ],
+        "assignments": [serialize_assignment(a) for a in assignments],
         "homework_result_count": homework_result_count,
         "mock_result_count": mock_result_count
     }

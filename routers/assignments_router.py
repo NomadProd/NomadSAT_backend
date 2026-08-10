@@ -1,11 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+import logging
 
-from dependencies.auth import AuthUser, get_current_user, is_admin_or_mentor
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import Response
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
+from dependencies.auth import (
+    AuthUser,
+    get_current_user,
+    is_admin_or_mentor,
+    require_admin_or_mentor,
+)
 from dependencies.filters import assignments_query, sessions_query
 from models import Assignment, Session as ClassSession, Class, User, ClassEnrollment
 from Methods.auth import get_db, require_roles
 from schemas import CreateAssignmentData, UpdateAssignmentData, CopyAssignmentData
+from services.cloudinary_service import delete_raw_file, upload_homework_document
+from services.homework_document import (
+    homework_document_upload_payload,
+    read_homework_document,
+    serialize_assignment,
+    utc_now_iso,
+    validate_homework_pdf,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assignments", tags=["assignments"])
 
@@ -63,6 +82,8 @@ def assignment_is_empty(assignment: Assignment) -> bool:
     if (assignment.task_link or "").strip():
         return False
     if assignment.due_date is not None:
+        return False
+    if read_homework_document(assignment.homework_document) is not None:
         return False
     return True
 
@@ -129,6 +150,7 @@ def apply_copy_to_target(
         overwrite.due_date = source.due_date
         overwrite.due_time = source.due_time
         overwrite.photo_required = source.photo_required
+        overwrite.homework_document = read_homework_document(source.homework_document)
         db.flush()
         return overwrite
 
@@ -142,6 +164,7 @@ def apply_copy_to_target(
         due_date=source.due_date,
         due_time=source.due_time,
         photo_required=source.photo_required,
+        homework_document=read_homework_document(source.homework_document),
     )
     db.add(new_assignment)
     db.flush()
@@ -209,16 +232,7 @@ def create_assignment_for_session(
 
     return {
         "message": "Assignment created successfully",
-        "assignment_id": assignment.id,
-        "session_id": assignment.session_id,
-        "student_id": assignment.student_id,
-        "slot_index": assignment.slot_index,
-        "title": assignment.title,
-        "instruction": assignment.instruction,
-        "task_link": assignment.task_link,
-        "due_date": assignment.due_date,
-        "due_time": assignment.due_time,
-        "photo_required": assignment.photo_required,
+        **serialize_assignment(assignment),
     }
 
 
@@ -242,21 +256,7 @@ def get_assignments_by_session(
         .all()
     )
 
-    return [
-        {
-            "assignment_id": a.id,
-            "session_id": a.session_id,
-            "student_id": a.student_id,
-            "slot_index": a.slot_index,
-            "title": a.title,
-            "instruction": a.instruction,
-            "task_link": a.task_link,
-            "due_date": a.due_date,
-            "due_time": a.due_time,
-            "photo_required": a.photo_required,
-        }
-        for a in assignments
-    ]
+    return [serialize_assignment(a) for a in assignments]
 
 
 
@@ -460,17 +460,100 @@ def update_assignment(
 
     return {
         "message": "Assignment updated successfully",
-        "assignment_id": assignment.id,
-        "session_id": assignment.session_id,
-        "student_id": assignment.student_id,
-        "slot_index": assignment.slot_index,
-        "title": assignment.title,
-        "instruction": assignment.instruction,
-        "task_link": assignment.task_link,
-        "due_date": assignment.due_date,
-        "due_time": assignment.due_time,
-        "photo_required": assignment.photo_required,
+        **serialize_assignment(assignment),
     }
+
+
+@router.post("/{assignment_id}/homework-document")
+async def upload_assignment_homework_document(
+    assignment_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
+):
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    filename = file.filename or "upload.pdf"
+    file_bytes = await file.read()
+    validation = validate_homework_pdf(
+        filename=filename,
+        content_type=file.content_type,
+        file_bytes=file_bytes,
+    )
+    if validation is not None:
+        return validation
+
+    old_document = read_homework_document(assignment.homework_document)
+    uploaded = upload_homework_document(
+        file_bytes,
+        assignment_id=assignment.id,
+        filename=filename,
+    )
+    new_document = {
+        "url": uploaded["url"],
+        "secure_url": uploaded["secure_url"],
+        "public_id": uploaded["public_id"],
+        "filename": filename,
+        "content_type": "application/pdf",
+        "size_bytes": int(uploaded["size_bytes"]),
+        "uploaded_at": utc_now_iso(),
+    }
+
+    try:
+        assignment.homework_document = new_document
+        flag_modified(assignment, "homework_document")
+        db.commit()
+        db.refresh(assignment)
+    except Exception:
+        db.rollback()
+        assignment.homework_document = old_document
+        delete_raw_file(str(uploaded["public_id"]))
+        logger.error(
+            "Failed to save homework_document for assignment_id=%s",
+            assignment_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save homework document",
+        )
+
+    old_public_id = (old_document or {}).get("public_id")
+    if old_public_id and old_public_id != uploaded["public_id"]:
+        delete_raw_file(str(old_public_id))
+
+    return {
+        "assignment_id": assignment.id,
+        "homework_document": homework_document_upload_payload(
+            assignment.homework_document
+        ),
+    }
+
+
+@router.delete("/{assignment_id}/homework-document", status_code=204)
+def delete_assignment_homework_document(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
+):
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    document = read_homework_document(assignment.homework_document)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Homework PDF not found")
+
+    public_id = document.get("public_id")
+    if public_id:
+        delete_raw_file(str(public_id))
+
+    assignment.homework_document = None
+    flag_modified(assignment, "homework_document")
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.delete("/{assignment_id}")

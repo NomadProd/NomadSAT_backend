@@ -168,6 +168,7 @@ class Assignment(Base):
     due_date = Column(Date, nullable=True)
     due_time = Column(Time, nullable=True)
     photo_required = Column(Boolean, default=False, nullable=False)
+    homework_document = Column(JSONB, nullable=True)
 
     session = relationship("Session", back_populates="assignments")
     student = relationship("User", back_populates="assignments")

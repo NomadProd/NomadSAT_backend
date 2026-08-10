@@ -7,23 +7,9 @@ from dependencies.auth import AuthUser, get_current_user
 from dependencies.filters import assignments_query
 from Methods.auth import get_db
 from models import Assignment
+from services.homework_document import serialize_assignment
 
 router = APIRouter(tags=["assignments"])
-
-
-def serialize_assignment(assignment: Assignment) -> dict:
-    return {
-        "assignment_id": assignment.id,
-        "session_id": assignment.session_id,
-        "student_id": assignment.student_id,
-        "slot_index": assignment.slot_index,
-        "title": assignment.title,
-        "instruction": assignment.instruction,
-        "task_link": assignment.task_link,
-        "due_date": assignment.due_date,
-        "due_time": assignment.due_time,
-        "photo_required": assignment.photo_required,
-    }
 
 
 @router.get("/assignments")
