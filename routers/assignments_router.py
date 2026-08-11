@@ -140,15 +140,19 @@ def apply_copy_to_target(
     student_id: int,
     slot_index: int,
     overwrite: Assignment | None,
+    due_date=None,
+    due_time=None,
 ) -> Assignment:
     title = source.title or f"Homework {slot_index}"
+    next_due_date = source.due_date if due_date is None else due_date
+    next_due_time = source.due_time if due_time is None else due_time
     if overwrite is not None:
         overwrite.slot_index = slot_index
         overwrite.title = title
         overwrite.instruction = source.instruction
         overwrite.task_link = source.task_link
-        overwrite.due_date = source.due_date
-        overwrite.due_time = source.due_time
+        overwrite.due_date = next_due_date
+        overwrite.due_time = next_due_time
         overwrite.photo_required = source.photo_required
         overwrite.homework_document = read_homework_document(source.homework_document)
         db.flush()
@@ -161,8 +165,8 @@ def apply_copy_to_target(
         title=title,
         instruction=source.instruction,
         task_link=source.task_link,
-        due_date=source.due_date,
-        due_time=source.due_time,
+        due_date=next_due_date,
+        due_time=next_due_time,
         photo_required=source.photo_required,
         homework_document=read_homework_document(source.homework_document),
     )
@@ -278,40 +282,166 @@ def copy_assignment(
         raise HTTPException(status_code=404, detail="Session not found")
 
     target_session_id = data.session_id or source.session_id
-    if target_session_id != source.session_id:
+    if target_session_id == source.session_id:
+        class_obj = db.query(Class).filter(Class.id == source_session.class_id).first()
+        if not class_obj:
+            raise HTTPException(status_code=404, detail="Class not found")
+
+        ensure_class_staff_access(current_user, class_obj)
+
+        if data.all_students or not data.target_student_ids:
+            enrollments = (
+                db.query(ClassEnrollment)
+                .filter(ClassEnrollment.class_id == class_obj.id)
+                .all()
+            )
+            target_student_ids = [enrollment.student_id for enrollment in enrollments]
+        else:
+            target_student_ids = list(dict.fromkeys(data.target_student_ids))
+
+        target_student_ids = [
+            student_id
+            for student_id in target_student_ids
+            if student_id != source.student_id
+        ]
+
+        if not target_student_ids:
+            raise HTTPException(status_code=400, detail="No target students to copy to")
+
+        created: list[dict] = []
+        skipped: list[dict] = []
+
+        for student_id in target_student_ids:
+            student = db.query(User).filter(
+                User.id == student_id,
+                User.role == "student",
+            ).first()
+            if not student:
+                skipped.append({"student_id": student_id, "reason": "STUDENT_NOT_FOUND"})
+                continue
+
+            enrollment = (
+                db.query(ClassEnrollment)
+                .filter(
+                    ClassEnrollment.class_id == class_obj.id,
+                    ClassEnrollment.student_id == student_id,
+                )
+                .first()
+            )
+            if not enrollment:
+                skipped.append({"student_id": student_id, "reason": "NOT_ENROLLED"})
+                continue
+
+            overwrite: Assignment | None = None
+            if data.target_slot_index is not None:
+                slot_index = data.target_slot_index
+                if not (1 <= slot_index <= MAX_HOMEWORK_SLOTS):
+                    skipped.append(
+                        {"student_id": student_id, "reason": "INVALID_SLOT"}
+                    )
+                    continue
+                existing = get_assignment_at_slot(
+                    db, target_session_id, student_id, slot_index
+                )
+                if existing is not None and not assignment_is_empty(existing):
+                    skipped.append({"student_id": student_id, "reason": "SLOT_OCCUPIED"})
+                    continue
+                overwrite = existing
+            else:
+                slot_index, overwrite = find_copy_target_slot(
+                    db, target_session_id, student_id
+                )
+                if slot_index is None:
+                    skipped.append({"student_id": student_id, "reason": "NO_FREE_SLOT"})
+                    continue
+
+            target_assignment = apply_copy_to_target(
+                db,
+                source,
+                target_session_id,
+                student_id,
+                slot_index,
+                overwrite,
+            )
+            created.append(
+                {
+                    "student_id": student_id,
+                    "assignment_id": target_assignment.id,
+                    "slot_index": slot_index,
+                    "updated": overwrite is not None,
+                }
+            )
+
+        db.commit()
+
+        return {
+            "message": f"Copied to {len(created)} student(s), skipped {len(skipped)}",
+            "source_assignment_id": source.id,
+            "created": created,
+            "skipped": skipped,
+        }
+
+    target_session = (
+        db.query(ClassSession).filter(ClassSession.id == target_session_id).first()
+    )
+    if not target_session:
+        raise HTTPException(status_code=404, detail="Target session not found")
+
+    source_class = db.query(Class).filter(Class.id == source_session.class_id).first()
+    if not source_class:
+        raise HTTPException(status_code=404, detail="Source class not found")
+
+    target_class = db.query(Class).filter(Class.id == target_session.class_id).first()
+    if not target_class:
+        raise HTTPException(status_code=404, detail="Target class not found")
+    if target_class.archived:
         raise HTTPException(
             status_code=400,
-            detail="Copying to a different session is not supported",
+            detail="Cannot copy assignments into an archived class",
         )
 
-    class_obj = db.query(Class).filter(Class.id == source_session.class_id).first()
-    if not class_obj:
-        raise HTTPException(status_code=404, detail="Class not found")
+    if current_user.role == "teacher":
+        if source_session.teacher_id != current_user.id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only copy your own assignments",
+            )
+        if target_session.teacher_id != current_user.id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only copy assignments into your own sessions",
+            )
+    else:
+        ensure_class_staff_access(current_user, source_class)
 
-    ensure_class_staff_access(current_user, class_obj)
+    if data.due_date is None or data.due_time is None:
+        raise HTTPException(
+            status_code=400,
+            detail="due_date and due_time are required when copying to another session",
+        )
 
-    if data.all_students or not data.target_student_ids:
+    if data.student_id is not None:
+        target_student_ids = [data.student_id]
+    elif data.target_student_ids:
+        target_student_ids = list(dict.fromkeys(data.target_student_ids))
+    elif data.all_students:
         enrollments = (
             db.query(ClassEnrollment)
-            .filter(ClassEnrollment.class_id == class_obj.id)
+            .filter(ClassEnrollment.class_id == target_class.id)
             .all()
         )
         target_student_ids = [enrollment.student_id for enrollment in enrollments]
     else:
-        target_student_ids = list(dict.fromkeys(data.target_student_ids))
-
-    target_student_ids = [
-        student_id
-        for student_id in target_student_ids
-        if student_id != source.student_id
-    ]
+        raise HTTPException(
+            status_code=400,
+            detail="Provide student_id, target_student_ids, or all_students for cross-session copy",
+        )
 
     if not target_student_ids:
         raise HTTPException(status_code=400, detail="No target students to copy to")
 
     created: list[dict] = []
     skipped: list[dict] = []
-
     for student_id in target_student_ids:
         student = db.query(User).filter(
             User.id == student_id,
@@ -324,7 +454,7 @@ def copy_assignment(
         enrollment = (
             db.query(ClassEnrollment)
             .filter(
-                ClassEnrollment.class_id == class_obj.id,
+                ClassEnrollment.class_id == target_class.id,
                 ClassEnrollment.student_id == student_id,
             )
             .first()
@@ -337,9 +467,7 @@ def copy_assignment(
         if data.target_slot_index is not None:
             slot_index = data.target_slot_index
             if not (1 <= slot_index <= MAX_HOMEWORK_SLOTS):
-                skipped.append(
-                    {"student_id": student_id, "reason": "INVALID_SLOT"}
-                )
+                skipped.append({"student_id": student_id, "reason": "INVALID_SLOT"})
                 continue
             existing = get_assignment_at_slot(
                 db, target_session_id, student_id, slot_index
@@ -363,6 +491,8 @@ def copy_assignment(
             student_id,
             slot_index,
             overwrite,
+            due_date=data.due_date,
+            due_time=data.due_time,
         )
         created.append(
             {
@@ -374,7 +504,6 @@ def copy_assignment(
         )
 
     db.commit()
-
     return {
         "message": f"Copied to {len(created)} student(s), skipped {len(skipped)}",
         "source_assignment_id": source.id,

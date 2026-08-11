@@ -181,6 +181,9 @@ class CopyAssignmentData(BaseModel):
     all_students: bool = False
     session_id: Optional[int] = None
     target_slot_index: Optional[int] = None
+    student_id: Optional[int] = None
+    due_date: Optional[dt.date] = None
+    due_time: Optional[dt.time] = None
 
 class HomeworkDocument(BaseModel):
     url: str
