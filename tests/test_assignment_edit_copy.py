@@ -94,7 +94,11 @@ def _assignment(**kwargs):
         due_date=dt.date(2026, 8, 1),
         due_time=dt.time(10, 0),
         photo_required=False,
-        homework_document={"url": "https://x/doc.pdf", "filename": "doc.pdf"},
+        homework_document={
+            "url": "https://res.cloudinary.com/demo/raw/upload/doc.pdf",
+            "public_id": "homework_documents/assignment_41_abcd",
+            "filename": "doc.pdf",
+        },
         homework_result=SimpleNamespace(
             id=999,
             submitted=True,
@@ -240,6 +244,54 @@ def test_admin_can_copy_assignment_to_other_session():
     assert created.due_date == dt.date(2026, 8, 30)
     assert created.due_time == dt.time(19, 0)
     assert created.homework_document == source.homework_document
+    assert created.homework_document["public_id"] == (
+        "homework_documents/assignment_41_abcd"
+    )
+    assert getattr(created, "homework_result", None) is None
+    assert created.id != source.id
+    assert source.title == "Old homework"
+    assert source.instruction == "old"
+    assert source.task_link == "http://old"
+    assert source.due_date == dt.date(2026, 8, 1)
+    assert source.due_time == dt.time(10, 0)
+    assert source.photo_required is False
+    assert source.homework_result is not None
+
+
+def test_mentor_can_copy_assignment_to_other_session():
+    source = _assignment(session_id=7, student_id=501)
+    source_session = _session(id=7, class_id=12, teacher_id=200)
+    target_session = _session(id=8, class_id=13, teacher_id=999)
+    source_class = _class(id=12, verbal_teacher_id=200, math_teacher_id=201)
+    target_class = _class(id=13, verbal_teacher_id=301, math_teacher_id=302, archived=False)
+    target_student = SimpleNamespace(id=777, role="student")
+    target_enrollment = SimpleNamespace(class_id=13, student_id=777)
+
+    db = _FakeSession(
+        {
+            Assignment: [source],
+            ClassSession: [source_session, target_session],
+            Class: [source_class, target_class],
+            ClassEnrollment: [target_enrollment],
+        }
+    )
+    db.model_payloads[User] = [target_student]
+
+    response = copy_assignment(
+        assignment_id=source.id,
+        data=CopyAssignmentData(
+            session_id=8,
+            student_id=777,
+            due_date=dt.date(2026, 8, 30),
+            due_time=dt.time(19, 0),
+        ),
+        db=db,
+        current_user=_user("mentor", 2),
+    )
+
+    assert len(response["created"]) == 1
+    assert db.added[0].session_id == 8
+    assert source.title == "Old homework"
 
 
 def test_teacher_can_copy_own_assignment_to_own_session():
@@ -347,3 +399,174 @@ def test_student_cannot_copy_assignment_endpoint(client: TestClient):
         },
     )
     assert response.status_code == 403
+
+
+def test_teacher_cannot_copy_another_teachers_assignment_in_same_session():
+    source = _assignment(session_id=7, student_id=501)
+    source_session = _session(id=7, class_id=12, teacher_id=900)
+    class_obj = _class(id=12, verbal_teacher_id=700, math_teacher_id=201)
+    db = _FakeSession(
+        {
+            Assignment: [source],
+            ClassSession: [source_session],
+            Class: [class_obj],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        copy_assignment(
+            assignment_id=source.id,
+            data=CopyAssignmentData(all_students=True),
+            db=db,
+            current_user=_user("teacher", 700),
+        )
+    assert getattr(exc.value, "status_code", None) == 403
+    assert db.added == []
+
+
+def test_copy_into_archived_class_is_rejected():
+    source = _assignment(session_id=7, student_id=501)
+    source_session = _session(id=7, class_id=12, teacher_id=200)
+    target_session = _session(id=8, class_id=13, teacher_id=200)
+    source_class = _class(id=12)
+    target_class = _class(id=13, archived=True)
+    db = _FakeSession(
+        {
+            Assignment: [source],
+            ClassSession: [source_session, target_session],
+            Class: [source_class, target_class],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        copy_assignment(
+            assignment_id=source.id,
+            data=CopyAssignmentData(
+                session_id=8,
+                student_id=777,
+                due_date=dt.date(2026, 9, 1),
+                due_time=dt.time(18, 0),
+            ),
+            db=db,
+            current_user=_user("admin", 1),
+        )
+    assert getattr(exc.value, "status_code", None) == 400
+    assert "archived" in str(exc.value.detail).lower()
+    assert db.added == []
+
+
+def test_copy_into_archived_class_same_session_is_rejected():
+    source = _assignment(session_id=7, student_id=501)
+    source_session = _session(id=7, class_id=12, teacher_id=200)
+    class_obj = _class(id=12, archived=True)
+    db = _FakeSession(
+        {
+            Assignment: [source],
+            ClassSession: [source_session],
+            Class: [class_obj],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        copy_assignment(
+            assignment_id=source.id,
+            data=CopyAssignmentData(all_students=True),
+            db=db,
+            current_user=_user("admin", 1),
+        )
+    assert getattr(exc.value, "status_code", None) == 400
+    assert db.added == []
+
+
+def test_copy_missing_due_date_for_other_session_returns_422():
+    source = _assignment(session_id=7, student_id=501)
+    source_session = _session(id=7, class_id=12, teacher_id=200)
+    target_session = _session(id=8, class_id=13, teacher_id=200)
+    source_class = _class(id=12)
+    target_class = _class(id=13)
+    db = _FakeSession(
+        {
+            Assignment: [source],
+            ClassSession: [source_session, target_session],
+            Class: [source_class, target_class],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        copy_assignment(
+            assignment_id=source.id,
+            data=CopyAssignmentData(session_id=8, student_id=777),
+            db=db,
+            current_user=_user("admin", 1),
+        )
+    assert getattr(exc.value, "status_code", None) == 422
+
+
+def test_copy_missing_source_assignment_returns_404():
+    db = _FakeSession({Assignment: []})
+
+    with pytest.raises(HTTPException) as exc:
+        copy_assignment(
+            assignment_id=999,
+            data=CopyAssignmentData(
+                session_id=8,
+                student_id=777,
+                due_date=dt.date(2026, 9, 1),
+                due_time=dt.time(18, 0),
+            ),
+            db=db,
+            current_user=_user("admin", 1),
+        )
+    assert getattr(exc.value, "status_code", None) == 404
+
+
+def test_copy_twice_creates_two_independent_assignments():
+    source = _assignment(session_id=7, student_id=501)
+    source_session = _session(id=7, class_id=12, teacher_id=200)
+    target_session = _session(id=8, class_id=13, teacher_id=999)
+    source_class = _class(id=12)
+    target_class = _class(id=13, archived=False)
+    target_student = SimpleNamespace(id=777, role="student")
+    target_enrollment = SimpleNamespace(class_id=13, student_id=777)
+
+    def refill(db):
+        db.model_payloads[Assignment] = [source]
+        db.model_payloads[ClassSession] = [source_session, target_session]
+        db.model_payloads[Class] = [source_class, target_class]
+        db.model_payloads[ClassEnrollment] = [target_enrollment]
+        db.model_payloads[User] = [target_student]
+
+    db = _FakeSession({})
+    refill(db)
+    first = copy_assignment(
+        assignment_id=source.id,
+        data=CopyAssignmentData(
+            session_id=8,
+            student_id=777,
+            due_date=dt.date(2026, 8, 30),
+            due_time=dt.time(19, 0),
+        ),
+        db=db,
+        current_user=_user("admin", 1),
+    )
+    refill(db)
+    second = copy_assignment(
+        assignment_id=source.id,
+        data=CopyAssignmentData(
+            session_id=8,
+            student_id=777,
+            due_date=dt.date(2026, 9, 1),
+            due_time=dt.time(18, 0),
+        ),
+        db=db,
+        current_user=_user("admin", 1),
+    )
+
+    assert len(first["created"]) == 1
+    assert len(second["created"]) == 1
+    assert db.added[0].id != db.added[1].id
+    assert db.added[0].id != source.id
+    assert db.added[1].id != source.id
+    assert db.added[0].due_date == dt.date(2026, 8, 30)
+    assert db.added[1].due_date == dt.date(2026, 9, 1)
+    assert source.due_date == dt.date(2026, 8, 1)

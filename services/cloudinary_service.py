@@ -84,18 +84,18 @@ def rollback_uploads(entries: list[dict]) -> None:
             delete_file(public_id, entry.get("content_type", "image/jpeg"))
 
 
-def upload_homework_document(
+def upload_raw_pdf(
     file_bytes: bytes,
     *,
-    assignment_id: int,
+    folder: str,
+    public_id: str,
     filename: str,
 ) -> dict[str, str | int]:
     _configure_cloudinary()
-    public_id = f"assignment_{assignment_id}_{uuid4().hex[:8]}"
     try:
         result = cloudinary.uploader.upload(
             file_bytes,
-            folder="homework_documents",
+            folder=folder,
             resource_type="raw",
             public_id=public_id,
         )
@@ -121,6 +121,36 @@ def upload_homework_document(
         "content_type": "application/pdf",
         "size_bytes": len(file_bytes),
     }
+
+
+def upload_homework_document(
+    file_bytes: bytes,
+    *,
+    assignment_id: int,
+    filename: str,
+) -> dict[str, str | int]:
+    public_id = f"assignment_{assignment_id}_{uuid4().hex[:8]}"
+    return upload_raw_pdf(
+        file_bytes,
+        folder="homework_documents",
+        public_id=public_id,
+        filename=filename,
+    )
+
+
+def upload_mock_document(
+    file_bytes: bytes,
+    *,
+    session_id: int,
+    filename: str,
+) -> dict[str, str | int]:
+    public_id = f"session_{session_id}_{uuid4().hex[:8]}"
+    return upload_raw_pdf(
+        file_bytes,
+        folder="mock_documents",
+        public_id=public_id,
+        filename=filename,
+    )
 
 
 def delete_raw_file(public_id: str) -> None:

@@ -200,6 +200,10 @@ class HomeworkDocumentUploadResponse(BaseModel):
     assignment_id: int
     homework_document: HomeworkDocumentStored
 
+class MockDocumentUploadResponse(BaseModel):
+    session_id: int
+    mock_document: HomeworkDocumentStored
+
 class CreateHomeworkResultData(BaseModel):
     submitted: bool = False
     photo_link: Optional[str] = None

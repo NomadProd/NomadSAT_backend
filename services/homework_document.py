@@ -72,6 +72,7 @@ def homework_document_for_api(
     *,
     include_public_id: bool = False,
     include_secure_url: bool = False,
+    default_filename: str = "homework.pdf",
 ) -> dict | None:
     document = read_homework_document(raw)
     if document is None:
@@ -83,7 +84,7 @@ def homework_document_for_api(
 
     payload: dict[str, Any] = {
         "url": url,
-        "filename": document.get("filename") or "homework.pdf",
+        "filename": document.get("filename") or default_filename,
         "content_type": document.get("content_type") or "application/pdf",
         "size_bytes": int(document.get("size_bytes") or 0),
         "uploaded_at": document.get("uploaded_at"),
@@ -103,6 +104,31 @@ def homework_document_upload_payload(raw: Any) -> dict:
     )
     if payload is None:
         raise ValueError("homework_document metadata is missing")
+    return payload
+
+
+def mock_document_for_api(
+    raw: Any,
+    *,
+    include_public_id: bool = False,
+    include_secure_url: bool = False,
+) -> dict | None:
+    return homework_document_for_api(
+        raw,
+        include_public_id=include_public_id,
+        include_secure_url=include_secure_url,
+        default_filename="mock_test.pdf",
+    )
+
+
+def mock_document_upload_payload(raw: Any) -> dict:
+    payload = mock_document_for_api(
+        raw,
+        include_public_id=True,
+        include_secure_url=True,
+    )
+    if payload is None:
+        raise ValueError("mock_document metadata is missing")
     return payload
 
 

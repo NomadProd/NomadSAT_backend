@@ -17,6 +17,7 @@ from models import (
     Session as ClassSession,
     User,
 )
+from services.homework_document import mock_document_for_api
 
 router = APIRouter(tags=["classes"])
 
@@ -57,6 +58,7 @@ def serialize_session(session_obj: ClassSession) -> dict:
         "subject": getattr(session_obj, "subject", None),
         "topic": session_obj.topic,
         "lesson_notes": session_obj.lesson_notes,
+        "mock_document": mock_document_for_api(session_obj.mock_document),
     }
 
 

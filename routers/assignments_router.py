@@ -38,6 +38,25 @@ def ensure_class_staff_access(current_user: User, class_obj: Class) -> None:
             raise HTTPException(status_code=403, detail="Not enough permissions")
 
 
+def ensure_teacher_copy_session_access(
+    current_user: User,
+    source_session: ClassSession,
+    target_session: ClassSession,
+) -> None:
+    if current_user.role != "teacher":
+        return
+    if source_session.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only copy your own assignments",
+        )
+    if target_session.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only copy assignments into your own sessions",
+        )
+
+
 def used_homework_slots(db: Session, session_id: int, student_id: int) -> set[int]:
     rows = (
         db.query(Assignment.slot_index)
@@ -283,11 +302,35 @@ def copy_assignment(
 
     target_session_id = data.session_id or source.session_id
     if target_session_id == source.session_id:
-        class_obj = db.query(Class).filter(Class.id == source_session.class_id).first()
-        if not class_obj:
-            raise HTTPException(status_code=404, detail="Class not found")
+        target_session = source_session
+    else:
+        target_session = (
+            db.query(ClassSession).filter(ClassSession.id == target_session_id).first()
+        )
+        if not target_session:
+            raise HTTPException(status_code=404, detail="Target session not found")
 
-        ensure_class_staff_access(current_user, class_obj)
+    source_class = db.query(Class).filter(Class.id == source_session.class_id).first()
+    if not source_class:
+        raise HTTPException(status_code=404, detail="Source class not found")
+
+    if target_session.class_id == source_session.class_id:
+        target_class = source_class
+    else:
+        target_class = db.query(Class).filter(Class.id == target_session.class_id).first()
+        if not target_class:
+            raise HTTPException(status_code=404, detail="Target class not found")
+
+    if target_class.archived:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot copy assignments into an archived class",
+        )
+
+    ensure_teacher_copy_session_access(current_user, source_session, target_session)
+
+    if target_session_id == source.session_id:
+        class_obj = target_class
 
         if data.all_students or not data.target_student_ids:
             enrollments = (
@@ -381,42 +424,9 @@ def copy_assignment(
             "skipped": skipped,
         }
 
-    target_session = (
-        db.query(ClassSession).filter(ClassSession.id == target_session_id).first()
-    )
-    if not target_session:
-        raise HTTPException(status_code=404, detail="Target session not found")
-
-    source_class = db.query(Class).filter(Class.id == source_session.class_id).first()
-    if not source_class:
-        raise HTTPException(status_code=404, detail="Source class not found")
-
-    target_class = db.query(Class).filter(Class.id == target_session.class_id).first()
-    if not target_class:
-        raise HTTPException(status_code=404, detail="Target class not found")
-    if target_class.archived:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot copy assignments into an archived class",
-        )
-
-    if current_user.role == "teacher":
-        if source_session.teacher_id != current_user.id:
-            raise HTTPException(
-                status_code=403,
-                detail="You can only copy your own assignments",
-            )
-        if target_session.teacher_id != current_user.id:
-            raise HTTPException(
-                status_code=403,
-                detail="You can only copy assignments into your own sessions",
-            )
-    else:
-        ensure_class_staff_access(current_user, source_class)
-
     if data.due_date is None or data.due_time is None:
         raise HTTPException(
-            status_code=400,
+            status_code=422,
             detail="due_date and due_time are required when copying to another session",
         )
 
@@ -433,7 +443,7 @@ def copy_assignment(
         target_student_ids = [enrollment.student_id for enrollment in enrollments]
     else:
         raise HTTPException(
-            status_code=400,
+            status_code=422,
             detail="Provide student_id, target_student_ids, or all_students for cross-session copy",
         )
 

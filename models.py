@@ -110,6 +110,7 @@ class Session(Base):
     topic = Column(String, nullable=True)
     academic_plan_item_id = Column(ARRAY(Integer), nullable=True)
     lesson_notes = Column(Text, nullable=True)
+    mock_document = Column(JSONB, nullable=True)
 
     class_obj = relationship("Class", back_populates="sessions")
     teacher = relationship(

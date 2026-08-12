@@ -1,12 +1,27 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+import logging
 
-from dependencies.auth import AuthUser, get_current_user
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
+from dependencies.auth import AuthUser, get_current_user, require_admin_or_mentor
 from dependencies.filters import classes_query, sessions_query
 from models import AcademicPlanItem, Class, Session as ClassSession, User
 from mock_assignments import ensure_mock_assignments_for_session
 from Methods.auth import get_db, normalize_role, require_roles
 from schemas import REVIEW_SUBJECTS, CreateSessionData, UpdateSessionData
+from services.cloudinary_service import delete_raw_file, upload_mock_document
+from services.homework_document import (
+    mock_document_for_api,
+    mock_document_upload_payload,
+    read_homework_document,
+    utc_now_iso,
+    validate_homework_pdf,
+    validation_error,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["sessions"])
 
@@ -95,6 +110,7 @@ def serialize_session(session_obj: ClassSession, db: Session):
         "academic_plan_item_ids": plan_item_ids,
         "academic_plan_items": [serialize_academic_plan_item(plan_item) for plan_item in plan_items],
         "lesson_notes": session_obj.lesson_notes,
+        "mock_document": mock_document_for_api(session_obj.mock_document),
     }
 
 
@@ -321,3 +337,103 @@ def delete_session(
     db.commit()
 
     return {"message": "Session deleted successfully"}
+
+
+@router.post("/sessions/{session_id}/mock-document")
+async def upload_session_mock_document(
+    session_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
+):
+    session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_type = (session_obj.session_type or "").strip().lower()
+    if session_type != "mock":
+        return validation_error(
+            {
+                "error": "INVALID_SESSION_TYPE",
+                "detail": "A mock test PDF can only be attached to a mock session",
+            }
+        )
+
+    filename = file.filename or "upload.pdf"
+    file_bytes = await file.read()
+    validation = validate_homework_pdf(
+        filename=filename,
+        content_type=file.content_type,
+        file_bytes=file_bytes,
+    )
+    if validation is not None:
+        return validation
+
+    old_document = read_homework_document(session_obj.mock_document)
+    uploaded = upload_mock_document(
+        file_bytes,
+        session_id=session_obj.id,
+        filename=filename,
+    )
+    new_document = {
+        "url": uploaded["url"],
+        "secure_url": uploaded["secure_url"],
+        "public_id": uploaded["public_id"],
+        "filename": filename,
+        "content_type": "application/pdf",
+        "size_bytes": int(uploaded["size_bytes"]),
+        "uploaded_at": utc_now_iso(),
+        "uploaded_by_id": current_user.id,
+    }
+
+    try:
+        session_obj.mock_document = new_document
+        flag_modified(session_obj, "mock_document")
+        db.commit()
+        db.refresh(session_obj)
+    except Exception:
+        db.rollback()
+        session_obj.mock_document = old_document
+        delete_raw_file(str(uploaded["public_id"]))
+        logger.error(
+            "Failed to save mock_document for session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save mock test document",
+        )
+
+    old_public_id = (old_document or {}).get("public_id")
+    if old_public_id and old_public_id != uploaded["public_id"]:
+        delete_raw_file(str(old_public_id))
+
+    return {
+        "session_id": session_obj.id,
+        "mock_document": mock_document_upload_payload(session_obj.mock_document),
+    }
+
+
+@router.delete("/sessions/{session_id}/mock-document", status_code=204)
+def delete_session_mock_document(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
+):
+    session_obj = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    document = read_homework_document(session_obj.mock_document)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Mock test PDF not found")
+
+    public_id = document.get("public_id")
+    if public_id:
+        delete_raw_file(str(public_id))
+
+    session_obj.mock_document = None
+    flag_modified(session_obj, "mock_document")
+    db.commit()
+    return Response(status_code=204)

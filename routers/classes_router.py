@@ -11,7 +11,7 @@ from Methods.auth import get_db, require_roles
 from routes.mock_results import serialize_mock_result_list_item
 from schemas import CreateClassData, UpdateClassData, UpdateClassScheduleData, EnrollmentData
 from services.attachments import read_submission_history
-from services.homework_document import serialize_assignment
+from services.homework_document import mock_document_for_api, serialize_assignment
 
 router = APIRouter(prefix="/classes", tags=["classes"])
 
@@ -170,6 +170,7 @@ def serialize_session(session_obj: ClassSession, db: Session):
         "academic_plan_item_ids": plan_item_ids,
         "academic_plan_items": [serialize_academic_plan_item(plan_item) for plan_item in plan_items],
         "lesson_notes": session_obj.lesson_notes,
+        "mock_document": mock_document_for_api(session_obj.mock_document),
     }
 
 

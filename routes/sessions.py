@@ -7,6 +7,7 @@ from dependencies.auth import AuthUser, get_current_user
 from dependencies.filters import sessions_query
 from Methods.auth import get_db
 from models import AcademicPlanItem, Session as ClassSession
+from services.homework_document import mock_document_for_api
 
 router = APIRouter(tags=["sessions"])
 
@@ -64,6 +65,7 @@ def serialize_session(session_obj: ClassSession, db: Session) -> dict:
         "academic_plan_item_ids": plan_item_ids,
         "academic_plan_items": [serialize_academic_plan_item(item) for item in plan_items],
         "lesson_notes": session_obj.lesson_notes,
+        "mock_document": mock_document_for_api(session_obj.mock_document),
     }
 
 
