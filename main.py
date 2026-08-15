@@ -13,7 +13,7 @@ from routers import (
     results_router,
     lesson_notes_router,
 )
-from routes import assignments, attendance, classes, homework_files, homework_results, mock_files, mock_results, sessions, users
+from routes import assignments, attendance, classes, diagnostic, homework_files, homework_results, mock_files, mock_results, sessions, users
 
 app = FastAPI()
 
@@ -53,6 +53,7 @@ app.include_router(homework_results.router)
 app.include_router(homework_files.router)
 app.include_router(mock_results.router)
 app.include_router(mock_files.router)
+app.include_router(diagnostic.router)
 app.include_router(users_router.router)
 app.include_router(classes_router.router)
 app.include_router(sessions_router.router)

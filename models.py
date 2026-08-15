@@ -1,6 +1,7 @@
-from sqlalchemy import Column, DateTime, Integer, String, ForeignKey, Boolean, Date, Time, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Column, DateTime, Integer, String, ForeignKey, Boolean, Date, Time, Text, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from database import Base
 
 
@@ -39,6 +40,11 @@ class User(Base):
     attendances = relationship("Attendance", back_populates="student")
     assignments = relationship("Assignment", back_populates="student")
     mock_results = relationship("MockResult", back_populates="student")
+    diagnostic_attempts = relationship(
+        "DiagnosticAttempt",
+        back_populates="student",
+        foreign_keys="DiagnosticAttempt.student_id",
+    )
 
 
 class Class(Base):
@@ -243,4 +249,88 @@ class MockResult(Base):
 
     __table_args__ = (
         UniqueConstraint("assignment_id", "student_id", name="uq_mock_assignment_student"),
+    )
+
+
+class DiagnosticQuestion(Base):
+    __tablename__ = "diagnostic_questions"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    section = Column(String, nullable=False)
+    domain = Column(String, nullable=False)
+    difficulty = Column(String, nullable=False)
+    points = Column(Integer, nullable=False)
+    order_index = Column(Integer, nullable=False)
+    question_text = Column(Text, nullable=False)
+    question_image = Column(Text, nullable=True)
+    choices = Column(JSONB, nullable=False)
+    correct_choice = Column(String, nullable=False)
+    explanation = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_by_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
+
+    answers = relationship("DiagnosticAnswer", back_populates="question")
+
+    __table_args__ = (
+        UniqueConstraint("order_index", name="uq_diagnostic_questions_order_index"),
+        Index("idx_diagnostic_questions_order", "order_index"),
+    )
+
+
+class DiagnosticAttempt(Base):
+    __tablename__ = "diagnostic_attempts"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    student_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    rw_points = Column(Integer, nullable=True)
+    math_points = Column(Integer, nullable=True)
+    rw_scaled_estimate = Column(Integer, nullable=True)
+    math_scaled_estimate = Column(Integer, nullable=True)
+    total_point_estimate = Column(Integer, nullable=True)
+    total_range_low = Column(Integer, nullable=True)
+    total_range_high = Column(Integer, nullable=True)
+    status = Column(String, nullable=False, default="in_progress", server_default="in_progress")
+
+    student = relationship(
+        "User",
+        back_populates="diagnostic_attempts",
+        foreign_keys=[student_id],
+    )
+    answers = relationship(
+        "DiagnosticAnswer",
+        back_populates="attempt",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_diagnostic_attempts_student_id", "student_id"),
+    )
+
+
+class DiagnosticAnswer(Base):
+    __tablename__ = "diagnostic_answers"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    attempt_id = Column(
+        BigInteger,
+        ForeignKey("diagnostic_attempts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    question_id = Column(BigInteger, ForeignKey("diagnostic_questions.id"), nullable=False)
+    selected_choice = Column(String, nullable=True)
+    is_correct = Column(Boolean, nullable=True)
+    answered_at = Column(DateTime(timezone=True), nullable=True)
+
+    attempt = relationship("DiagnosticAttempt", back_populates="answers")
+    question = relationship("DiagnosticQuestion", back_populates="answers")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "attempt_id",
+            "question_id",
+            name="uq_diagnostic_answers_attempt_question",
+        ),
+        Index("idx_diagnostic_answers_attempt_id", "attempt_id"),
     )
