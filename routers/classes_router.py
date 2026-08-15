@@ -4,9 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from dependencies.auth import AuthUser, get_current_user, require_admin, require_staff
-from dependencies.filters import classes_query, sessions_query, homework_results_query
+from dependencies.filters import classes_query, sessions_query, homework_results_query, mock_results_query
 from models import AcademicPlanItem, Class, User, ClassEnrollment, Assignment, Attendance, HomeworkResult, MockResult, Session as ClassSession
-from mock_assignments import ensure_mock_assignments_for_class, ensure_mock_assignments_for_session
+from mock_assignments import (
+    ensure_mock_assignments_for_session,
+    ensure_mock_assignments_for_student,
+)
 from Methods.auth import get_db, require_roles
 from routes.mock_results import serialize_mock_result_list_item
 from schemas import CreateClassData, UpdateClassData, UpdateClassScheduleData, EnrollmentData
@@ -57,6 +60,29 @@ def normalize_session_plan_item_ids(raw_value) -> list[int]:
     if isinstance(raw_value, tuple):
         return [int(value) for value in raw_value if value is not None]
     return [int(raw_value)]
+
+
+def load_plan_items_by_id(
+    sessions: list[ClassSession], db: Session
+) -> dict[int, AcademicPlanItem]:
+    plan_item_ids: list[int] = []
+    seen: set[int] = set()
+    for session_obj in sessions:
+        for plan_item_id in normalize_session_plan_item_ids(
+            session_obj.academic_plan_item_id
+        ):
+            if plan_item_id in seen:
+                continue
+            seen.add(plan_item_id)
+            plan_item_ids.append(plan_item_id)
+    if not plan_item_ids:
+        return {}
+    plan_items = (
+        db.query(AcademicPlanItem)
+        .filter(AcademicPlanItem.id.in_(plan_item_ids))
+        .all()
+    )
+    return {plan_item.id: plan_item for plan_item in plan_items}
 
 
 def get_session_plan_items(session_obj: ClassSession, db: Session) -> list[AcademicPlanItem]:
@@ -152,9 +178,20 @@ def expand_class_homework_result_rows(
     return rows
 
 
-def serialize_session(session_obj: ClassSession, db: Session):
-    plan_items = get_session_plan_items(session_obj, db)
+def serialize_session(
+    session_obj: ClassSession,
+    db: Session,
+    plan_items_by_id: dict[int, AcademicPlanItem] | None = None,
+):
     plan_item_ids = normalize_session_plan_item_ids(session_obj.academic_plan_item_id)
+    if plan_items_by_id is None:
+        plan_items = get_session_plan_items(session_obj, db)
+    else:
+        plan_items = [
+            plan_items_by_id[plan_item_id]
+            for plan_item_id in plan_item_ids
+            if plan_item_id in plan_items_by_id
+        ]
 
     return {
         "session_id": session_obj.id,
@@ -703,27 +740,84 @@ def get_student_home_class_details(
         .filter(Class.id.in_(class_ids), Class.archived.is_(False))
         .all()
     )
-    result = []
+    if not classes:
+        return []
 
-    for class_obj in classes:
-        verbal_teacher = db.query(User).filter(User.id == class_obj.verbal_teacher_id).first()
-        math_teacher = db.query(User).filter(User.id == class_obj.math_teacher_id).first()
-        sessions = db.query(ClassSession).filter(ClassSession.class_id == class_obj.id).all()
-        session_ids = [s.id for s in sessions]
+    teacher_ids = {
+        teacher_id
+        for class_obj in classes
+        for teacher_id in (class_obj.verbal_teacher_id, class_obj.math_teacher_id)
+        if teacher_id is not None
+    }
+    teachers_by_id = {
+        teacher.id: teacher
+        for teacher in db.query(User).filter(User.id.in_(teacher_ids)).all()
+    } if teacher_ids else {}
 
-        created_mock_assignments = ensure_mock_assignments_for_class(db, class_obj.id)
-        if created_mock_assignments:
-            db.commit()
+    sessions = (
+        db.query(ClassSession)
+        .filter(ClassSession.class_id.in_([class_obj.id for class_obj in classes]))
+        .all()
+    )
+    sessions_by_class: dict[int, list[ClassSession]] = {}
+    for session_obj in sessions:
+        sessions_by_class.setdefault(session_obj.class_id, []).append(session_obj)
+    session_ids = [session_obj.id for session_obj in sessions]
+    session_class_ids = {
+        session_obj.id: session_obj.class_id for session_obj in sessions
+    }
+    plan_items_by_id = load_plan_items_by_id(sessions, db)
 
-        assignments = db.query(Assignment).filter(
+    assignments = (
+        db.query(Assignment)
+        .filter(
             Assignment.session_id.in_(session_ids),
-            Assignment.student_id == current_user.id
-        ).all() if session_ids else []
+            Assignment.student_id == current_user.id,
+        )
+        .all()
+        if session_ids
+        else []
+    )
+    assignments_by_class: dict[int, list[Assignment]] = {}
+    for assignment in assignments:
+        class_id = session_class_ids.get(assignment.session_id)
+        if class_id is None:
+            continue
+        assignments_by_class.setdefault(class_id, []).append(assignment)
 
-        attendances = db.query(Attendance).filter(
+    attendances = (
+        db.query(Attendance)
+        .filter(
             Attendance.session_id.in_(session_ids),
-            Attendance.student_id == current_user.id
-        ).all() if session_ids else []
+            Attendance.student_id == current_user.id,
+        )
+        .all()
+        if session_ids
+        else []
+    )
+    attendances_by_class: dict[int, list[Attendance]] = {}
+    for attendance in attendances:
+        class_id = session_class_ids.get(attendance.session_id)
+        if class_id is None:
+            continue
+        attendances_by_class.setdefault(class_id, []).append(attendance)
+
+    result = []
+    for class_obj in classes:
+        verbal_teacher = teachers_by_id.get(class_obj.verbal_teacher_id)
+        math_teacher = teachers_by_id.get(class_obj.math_teacher_id)
+        class_sessions = sorted(
+            sessions_by_class.get(class_obj.id, []),
+            key=lambda session_obj: session_obj.id,
+        )
+        class_assignments = sorted(
+            assignments_by_class.get(class_obj.id, []),
+            key=lambda assignment: assignment.id,
+        )
+        class_attendances = sorted(
+            attendances_by_class.get(class_obj.id, []),
+            key=lambda attendance: attendance.id,
+        )
 
         result.append({
             "class": {
@@ -748,19 +842,19 @@ def get_student_home_class_details(
                 }
             ],
             "sessions": [
-                serialize_session(s, db)
-                for s in sessions
+                serialize_session(session_obj, db, plan_items_by_id)
+                for session_obj in class_sessions
             ],
             "attendance": [
                 {
-                    "attendance_id": a.id,
-                    "session_id": a.session_id,
-                    "student_id": a.student_id,
-                    "status": a.status
+                    "attendance_id": attendance.id,
+                    "session_id": attendance.session_id,
+                    "student_id": attendance.student_id,
+                    "status": attendance.status
                 }
-                for a in attendances
+                for attendance in class_attendances
             ],
-            "assignments": [serialize_assignment(a) for a in assignments]
+            "assignments": [serialize_assignment(assignment) for assignment in class_assignments]
         })
 
     return result
@@ -882,7 +976,9 @@ def assign_student_to_class(
     )
 
     db.add(enrollment)
-    created_mock_assignments = ensure_mock_assignments_for_class(db, class_id)
+    created_mock_assignments = ensure_mock_assignments_for_student(
+        db, class_id, data.student_id
+    )
     db.commit()
 
     return {
@@ -916,10 +1012,6 @@ def get_class_full_detail(
 
     session_ids = [s.id for s in sessions]
 
-    created_mock_assignments = ensure_mock_assignments_for_class(db, class_id)
-    if created_mock_assignments:
-        db.commit()
-
     attendances = db.query(Attendance).filter(
         Attendance.session_id.in_(session_ids)
     ).all() if session_ids else []
@@ -928,6 +1020,7 @@ def get_class_full_detail(
         Assignment.session_id.in_(session_ids)
     ).all() if session_ids else []
     assignment_ids = [a.id for a in assignments]
+    plan_items_by_id = load_plan_items_by_id(sessions, db)
     homework_result_count = db.query(HomeworkResult).filter(
         HomeworkResult.assignment_id.in_(assignment_ids)
     ).count() if assignment_ids else 0
@@ -959,7 +1052,7 @@ def get_class_full_detail(
             for s in students
         ],
         "sessions": [
-            serialize_session(s, db)
+            serialize_session(s, db, plan_items_by_id)
             for s in sessions
         ],
         "attendance": [
@@ -1035,7 +1128,7 @@ def get_class_mock_results(
     if not assignment_ids:
         return []
 
-    results = db.query(MockResult).filter(
+    results = mock_results_query(db, current_user).filter(
         MockResult.assignment_id.in_(assignment_ids)
     ).all()
 

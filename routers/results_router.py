@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.datastructures import UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cloudinary_upload import upload_homework_file
@@ -16,7 +17,13 @@ from models import (
     ClassEnrollment
 )
 from dependencies.auth import AuthUser, get_current_user
-from dependencies.filters import assignments_query, homework_results_query
+from dependencies.filters import (
+    assignments_query,
+    attendance_query,
+    homework_results_query,
+    mock_results_query,
+    sessions_query,
+)
 from Methods.auth import get_db, require_roles
 from services.homework_document import mock_document_for_api, serialize_assignment
 from routes.mock_results import serialize_mock_result_list_item
@@ -274,23 +281,30 @@ async def create_mock_result(
 @router.get("/assignments/{assignment_id}/mock-results")
 def get_mock_results_by_assignment(
     assignment_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    assignment = (
+        assignments_query(db, current_user)
+        .filter(Assignment.id == assignment_id)
+        .first()
+    )
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    session_obj = db.query(ClassSession).filter(ClassSession.id == assignment.session_id).first()
+    session_obj = (
+        sessions_query(db, current_user)
+        .filter(ClassSession.id == assignment.session_id)
+        .first()
+    )
     if not session_obj:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    class_obj = db.query(Class).filter(Class.id == session_obj.class_id).first()
-    if not class_obj:
-        raise HTTPException(status_code=404, detail="Class not found")
-
-    results = db.query(MockResult).filter(
-        MockResult.assignment_id == assignment_id
-    ).all()
+    results = (
+        mock_results_query(db, current_user)
+        .filter(MockResult.assignment_id == assignment_id)
+        .all()
+    )
 
     return [
         serialize_mock_result_list_item(r)
@@ -357,13 +371,21 @@ async def update_mock_result(
 @router.get("/students/{student_id}/mock-results")
 def get_student_mock_history(
     student_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    if current_user.role == "student" and current_user.id != student_id:
+        raise HTTPException(status_code=404, detail="Student not found")
+
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    results = db.query(MockResult).filter(MockResult.student_id == student_id).all()
+    results = (
+        mock_results_query(db, current_user)
+        .filter(MockResult.student_id == student_id)
+        .all()
+    )
 
     history = []
     for r in results:
@@ -387,23 +409,36 @@ def get_student_mock_history(
 @router.get("/students/{student_id}/results")
 def get_student_all_results(
     student_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    if current_user.role == "student" and current_user.id != student_id:
+        raise HTTPException(status_code=404, detail="Student not found")
+
     student = db.query(User).filter(User.id == student_id, User.role == "student").first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    homework_results = db.query(HomeworkResult).filter(
-        HomeworkResult.student_id == student_id
-    ).all()
+    student_assignment_ids = select(Assignment.id).where(
+        Assignment.student_id == student_id
+    )
+    homework_results = (
+        homework_results_query(db, current_user)
+        .filter(HomeworkResult.assignment_id.in_(student_assignment_ids))
+        .all()
+    )
 
-    mock_results = db.query(MockResult).filter(
-        MockResult.student_id == student_id
-    ).all()
+    mock_results = (
+        mock_results_query(db, current_user)
+        .filter(MockResult.student_id == student_id)
+        .all()
+    )
 
-    attendance_records = db.query(Attendance).filter(
-        Attendance.student_id == student_id
-    ).all()
+    attendance_records = (
+        attendance_query(db, current_user)
+        .filter(Attendance.student_id == student_id)
+        .all()
+    )
 
     return {
         "student": {

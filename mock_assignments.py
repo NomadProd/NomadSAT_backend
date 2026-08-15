@@ -43,6 +43,22 @@ def ensure_mock_assignments_for_session(
     return created
 
 
+def ensure_mock_assignments_for_student(
+    db: Session, class_id: int, student_id: int
+) -> int:
+    sessions = db.query(ClassSession).filter(
+        ClassSession.class_id == class_id,
+        ClassSession.session_type == "mock",
+    ).all()
+
+    created = 0
+    for session_obj in sessions:
+        created += ensure_mock_assignments_for_session(
+            db, session_obj, student_ids=[student_id]
+        )
+    return created
+
+
 def ensure_mock_assignments_for_class(db: Session, class_id: int) -> int:
     sessions = db.query(ClassSession).filter(
         ClassSession.class_id == class_id,

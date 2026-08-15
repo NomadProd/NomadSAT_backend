@@ -13,9 +13,10 @@ from dependencies.filters import (
     attendance_query,
     classes_query,
     homework_results_query,
+    mock_results_query,
     sessions_query,
 )
-from models import Assignment, Attendance, Class, HomeworkResult, Session as ClassSession
+from models import Assignment, Attendance, Class, HomeworkResult, MockResult, Session as ClassSession
 from Methods.auth import get_db
 from main import app
 
@@ -87,6 +88,21 @@ def test_unauthenticated_classes_returns_401(client: TestClient):
     assert response.status_code == 401
 
 
+def test_unauthenticated_assignment_mock_results_returns_401(client: TestClient):
+    response = client.get("/assignments/1/mock-results")
+    assert response.status_code == 401
+
+
+def test_unauthenticated_student_mock_results_returns_401(client: TestClient):
+    response = client.get("/students/1/mock-results")
+    assert response.status_code == 401
+
+
+def test_unauthenticated_student_results_returns_401(client: TestClient):
+    response = client.get("/students/1/results")
+    assert response.status_code == 401
+
+
 def test_bearer_token_is_accepted_for_users_me(client: TestClient):
     def override_user() -> AuthUser:
         return AuthUser(id=7, role="student")
@@ -147,6 +163,34 @@ def test_student_cannot_read_other_students_homework_result_returns_404(client: 
     assert response.status_code == 404
 
 
+def test_student_cannot_read_other_students_mock_history_returns_404(client: TestClient):
+    def override_student() -> AuthUser:
+        return AuthUser(id=1, role="student")
+
+    def override_db():
+        yield _FakeSession()
+
+    app.dependency_overrides[get_current_user] = override_student
+    app.dependency_overrides[get_db] = override_db
+
+    response = client.get("/students/2/mock-results")
+    assert response.status_code == 404
+
+
+def test_student_cannot_read_other_students_combined_results_returns_404(client: TestClient):
+    def override_student() -> AuthUser:
+        return AuthUser(id=1, role="student")
+
+    def override_db():
+        yield _FakeSession()
+
+    app.dependency_overrides[get_current_user] = override_student
+    app.dependency_overrides[get_db] = override_db
+
+    response = client.get("/students/2/results")
+    assert response.status_code == 404
+
+
 def test_non_admin_users_list_returns_403(client: TestClient):
     def override_student() -> AuthUser:
         return AuthUser(id=1, role="student")
@@ -197,4 +241,26 @@ def test_student_attendance_query_filters_by_student_id():
 
     assert db.last_query is not None
     assert db.last_query.model is Attendance
+    assert len(db.last_query.filters) == 1
+
+
+def test_student_mock_results_query_filters_by_student_id():
+    db = _FakeSession()
+    user = AuthUser(id=11, role="student")
+
+    mock_results_query(db, user)
+
+    assert db.last_query is not None
+    assert db.last_query.model is MockResult
+    assert len(db.last_query.filters) == 1
+
+
+def test_teacher_mock_results_query_filters_by_session_teacher():
+    db = _FakeSession()
+    user = AuthUser(id=5, role="teacher")
+
+    mock_results_query(db, user)
+
+    assert db.last_query is not None
+    assert db.last_query.model is MockResult
     assert len(db.last_query.filters) == 1

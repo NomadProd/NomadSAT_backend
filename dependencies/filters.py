@@ -10,6 +10,7 @@ from models import (
     Class,
     ClassEnrollment,
     HomeworkResult,
+    MockResult,
     Session as ClassSession,
 )
 
@@ -89,6 +90,25 @@ def homework_results_query(db: Session, user: AuthUser) -> Query:
         return query.filter(HomeworkResult.assignment_id.in_(student_assignment_ids))
 
     return query.filter(HomeworkResult.id == -1)
+
+
+def mock_results_query(db: Session, user: AuthUser) -> Query:
+    query = db.query(MockResult)
+    role = normalize_role(user.role)
+
+    if role in ("admin", "mentor"):
+        return query
+    if role == "teacher":
+        teacher_assignment_ids = (
+            select(Assignment.id)
+            .join(ClassSession, ClassSession.id == Assignment.session_id)
+            .where(ClassSession.teacher_id == user.id)
+        )
+        return query.filter(MockResult.assignment_id.in_(teacher_assignment_ids))
+    if role == "student":
+        return query.filter(MockResult.student_id == user.id)
+
+    return query.filter(MockResult.id == -1)
 
 
 def attendance_query(db: Session, user: AuthUser) -> Query:
