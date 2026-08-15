@@ -271,12 +271,48 @@ def list_diagnostic_questions(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(require_staff),
 ):
-    questions = (
-        db.query(DiagnosticQuestion)
-        .order_by(DiagnosticQuestion.order_index)
-        .all()
-    )
-    return [serialize_question_admin(question) for question in questions]
+    try:
+        questions = (
+            db.query(DiagnosticQuestion)
+            .order_by(DiagnosticQuestion.order_index)
+            .all()
+        )
+        # #region agent log
+        try:
+            import json
+            import time
+            with open("/Users/rassulkaa/Desktop/rassulkaa/turan/.cursor/debug-b71801.log", "a", encoding="utf-8") as _dbg:
+                _dbg.write(json.dumps({
+                    "sessionId": "b71801",
+                    "runId": "post-fix",
+                    "hypothesisId": "A",
+                    "location": "diagnostic.py:list_diagnostic_questions",
+                    "message": "listed diagnostic questions",
+                    "data": {"count": len(questions), "role": current_user.role},
+                    "timestamp": int(time.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        return [serialize_question_admin(question) for question in questions]
+    except Exception as exc:
+        # #region agent log
+        try:
+            import json
+            import time
+            with open("/Users/rassulkaa/Desktop/rassulkaa/turan/.cursor/debug-b71801.log", "a", encoding="utf-8") as _dbg:
+                _dbg.write(json.dumps({
+                    "sessionId": "b71801",
+                    "hypothesisId": "A",
+                    "location": "diagnostic.py:list_diagnostic_questions",
+                    "message": "list diagnostic questions failed",
+                    "data": {"error_type": type(exc).__name__, "error": str(exc)[:220]},
+                    "timestamp": int(time.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        raise
 
 
 @router.post("/diagnostic/attempts", response_model=DiagnosticAttemptCreatedSchema)
