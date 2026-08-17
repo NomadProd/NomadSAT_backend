@@ -272,17 +272,23 @@ class DiagnosticQuestion(Base):
     explanation = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_by_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     answers = relationship("DiagnosticAnswer", back_populates="question")
 
     __table_args__ = (
-        UniqueConstraint("order_index", name="uq_diagnostic_questions_order_index"),
+        Index(
+            "uq_diagnostic_questions_order_index",
+            "order_index",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("idx_diagnostic_questions_order", "order_index"),
         Index(
             "uq_diagnostic_questions_question_url",
             "question_url",
             unique=True,
-            postgresql_where=text("question_url IS NOT NULL"),
+            postgresql_where=text("deleted_at IS NULL AND question_url IS NOT NULL"),
         ),
     )
 
@@ -308,6 +314,7 @@ class DiagnosticAttempt(Base):
         ForeignKey("diagnostic_questions.id"),
         nullable=True,
     )
+    question_ids = Column(JSONB, nullable=True)
 
     student = relationship(
         "User",

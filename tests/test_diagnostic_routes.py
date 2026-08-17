@@ -124,7 +124,15 @@ class FakeSession:
                 return actual in values
             return False
         if op_name in ("is_", "is"):
-            return actual is expected or actual == expected
+            name = type(expected).__name__ if expected is not None else "NoneType"
+            if expected is None or name == "Null":
+                return actual is None
+            if name == "True_":
+                return actual is True
+            if name == "False_":
+                return actual is False
+            expected_value = expected.value if hasattr(expected, "value") else expected
+            return actual is expected_value
         return actual == expected
 
 
@@ -287,6 +295,8 @@ def test_create_attempt_returns_in_progress_id(client: TestClient):
     assert body["status"] == "in_progress"
     assert isinstance(body["attempt_id"], int)
     assert body["attempt_id"] > 0
+    stored = db.store[DiagnosticAttempt][0]
+    assert stored.question_ids == [question.id for question in db.store[DiagnosticQuestion]]
     stored = db.store[DiagnosticAttempt][0]
     assert stored.student_id == 7
     assert stored.status == "in_progress"
@@ -620,7 +630,7 @@ def test_upload_question_image_rejects_pdf(client: TestClient, monkeypatch):
     assert called == []
 
 
-def test_delete_question_blocked_when_answers_exist(client: TestClient):
+def test_delete_question_with_answers_frees_slot(client: TestClient):
     db = FakeSession()
     questions = _seed_questions(db, count=1)
     attempt = DiagnosticAttempt(
@@ -642,7 +652,91 @@ def test_delete_question_blocked_when_answers_exist(client: TestClient):
     _override_user("admin", user_id=1)
 
     response = client.delete(f"/diagnostic/questions/{questions[0].id}")
-    assert response.status_code == 409
+    assert response.status_code == 200
+    assert questions[0].deleted_at is not None
+    assert attempt.question_ids == [questions[0].id]
+
+    listed = client.get("/diagnostic/questions")
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+    created = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(1, question_text="Replacement stem"),
+    )
+    assert created.status_code == 200
+    assert created.json()["id"] != questions[0].id
+    assert created.json()["question_text"] == "Replacement stem"
+
+
+def test_in_progress_attempt_keeps_deleted_question(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    started = client.post("/diagnostic/attempts")
+    assert started.status_code == 200
+    attempt_id = started.json()["attempt_id"]
+    old_id = questions[0].id
+
+    _override_user("admin", user_id=1)
+    deleted = client.delete(f"/diagnostic/questions/{old_id}")
+    assert deleted.status_code == 200
+    replacement = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(1, question_text="New stem"),
+    )
+    assert replacement.status_code == 200
+    new_id = replacement.json()["id"]
+
+    _override_user("student", user_id=7)
+    body = client.get(f"/diagnostic/attempts/{attempt_id}/questions").json()
+    old_item = next(item for item in body if item["order_index"] == 1)
+    assert old_item["id"] == old_id
+    assert old_item["question_text"] == "Question 1"
+
+    started_new = client.post("/diagnostic/attempts")
+    assert started_new.status_code == 200
+    new_attempt_id = started_new.json()["attempt_id"]
+    new_body = client.get(f"/diagnostic/attempts/{new_attempt_id}/questions").json()
+    new_item = next(item for item in new_body if item["order_index"] == 1)
+    assert new_item["id"] == new_id
+    assert new_item["question_text"] == "New stem"
+
+
+def test_completed_attempt_review_keeps_original_question(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7)
+    questions = _seed_questions(db)
+    attempt = _completed_attempt(db, 7)
+    db.add(
+        DiagnosticAnswer(
+            attempt_id=attempt.id,
+            question_id=questions[0].id,
+            selected_choice="B",
+            is_correct=True,
+            answered_at=_utcnow(),
+        )
+    )
+    _override_db(db)
+    _override_user("admin", user_id=1)
+
+    deleted = client.delete(f"/diagnostic/questions/{questions[0].id}")
+    assert deleted.status_code == 200
+    replacement = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(1, question_text="Replacement stem"),
+    )
+    assert replacement.status_code == 200
+
+    _override_user("student", user_id=7)
+    detail = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert detail.status_code == 200
+    first = detail.json()["answers"][0]
+    assert first["question_text"] == "Question 1"
+    assert first["correct_choice"] == "B"
+    assert first["selected_choice"] == "B"
 
 
 def test_save_progress_sets_math_start_once_and_updates_question(client: TestClient):

@@ -438,6 +438,77 @@ def _question_from_payload(
     return question
 
 
+def _parse_question_ids(raw) -> list[int]:
+    if not isinstance(raw, list):
+        return []
+    ids: list[int] = []
+    for item in raw:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _question_ids_from(questions: list[DiagnosticQuestion]) -> list[int]:
+    return [question.id for question in questions]
+
+
+def _active_questions(db: Session) -> list[DiagnosticQuestion]:
+    return (
+        db.query(DiagnosticQuestion)
+        .filter(DiagnosticQuestion.deleted_at.is_(None))
+        .order_by(DiagnosticQuestion.order_index)
+        .all()
+    )
+
+
+def _questions_for_ids(db: Session, question_ids: list[int]) -> list[DiagnosticQuestion]:
+    if not question_ids:
+        return []
+    rows = (
+        db.query(DiagnosticQuestion)
+        .filter(DiagnosticQuestion.id.in_(question_ids))
+        .all()
+    )
+    by_id = {row.id: row for row in rows}
+    return [by_id[question_id] for question_id in question_ids if question_id in by_id]
+
+
+def _questions_for_attempt(
+    db: Session,
+    attempt: DiagnosticAttempt,
+) -> list[DiagnosticQuestion]:
+    ids = _parse_question_ids(getattr(attempt, "question_ids", None))
+    if ids:
+        return _questions_for_ids(db, ids)
+    return _active_questions(db)
+
+
+def _freeze_attempt_questions(
+    db: Session,
+    questions: list[DiagnosticQuestion],
+) -> None:
+    ids = _question_ids_from(questions)
+    attempts = (
+        db.query(DiagnosticAttempt)
+        .filter(DiagnosticAttempt.question_ids.is_(None))
+        .all()
+    )
+    for attempt in attempts:
+        attempt.question_ids = ids
+
+
+def _question_belongs_to_attempt(
+    attempt: DiagnosticAttempt,
+    question_id: int,
+) -> bool:
+    ids = _parse_question_ids(getattr(attempt, "question_ids", None))
+    if not ids:
+        return True
+    return question_id in ids
+
+
 def _order_index_taken(
     db: Session,
     order_index: int,
@@ -445,7 +516,8 @@ def _order_index_taken(
     exclude_id: int | None = None,
 ) -> bool:
     query = db.query(DiagnosticQuestion).filter(
-        DiagnosticQuestion.order_index == order_index
+        DiagnosticQuestion.order_index == order_index,
+        DiagnosticQuestion.deleted_at.is_(None),
     )
     existing = query.first()
     if existing is None:
@@ -464,7 +536,8 @@ def _question_url_taken(
     if not question_url:
         return False
     query = db.query(DiagnosticQuestion).filter(
-        DiagnosticQuestion.question_url == question_url
+        DiagnosticQuestion.question_url == question_url,
+        DiagnosticQuestion.deleted_at.is_(None),
     )
     existing = query.first()
     if existing is None:
@@ -553,7 +626,7 @@ def update_diagnostic_question(
         .filter(DiagnosticQuestion.id == question_id)
         .first()
     )
-    if question is None:
+    if question is None or question.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Diagnostic question not found")
     if _order_index_taken(db, data.order_index, exclude_id=question.id):
         raise HTTPException(
@@ -589,26 +662,12 @@ def delete_diagnostic_question(
         .filter(DiagnosticQuestion.id == question_id)
         .first()
     )
-    if question is None:
+    if question is None or question.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Diagnostic question not found")
-    answer_count = (
-        db.query(DiagnosticAnswer)
-        .filter(DiagnosticAnswer.question_id == question_id)
-        .count()
-    )
-    if answer_count:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Cannot delete a question that has student answers. "
-                "Historical attempts would be corrupted."
-            ),
-        )
-    public_id = question.question_image_public_id
-    db.delete(question)
+    active = _active_questions(db)
+    _freeze_attempt_questions(db, active)
+    question.deleted_at = _utcnow()
     db.commit()
-    if public_id:
-        delete_file(public_id, "image/jpeg")
     return {"ok": True, "id": question_id}
 
 
@@ -617,11 +676,7 @@ def list_diagnostic_questions(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(require_staff),
 ):
-    questions = (
-        db.query(DiagnosticQuestion)
-        .order_by(DiagnosticQuestion.order_index)
-        .all()
-    )
+    questions = _active_questions(db)
     return [serialize_question_admin(question) for question in questions]
 
 
@@ -630,13 +685,13 @@ def create_diagnostic_attempt(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    question_count = db.query(DiagnosticQuestion).count()
-    if question_count < QUESTION_COUNT:
+    questions = _active_questions(db)
+    if len(questions) < QUESTION_COUNT:
         raise HTTPException(
             status_code=409,
             detail=(
                 "Diagnostic question bank is incomplete. "
-                f"Expected {QUESTION_COUNT} questions, found {question_count}."
+                f"Expected {QUESTION_COUNT} questions, found {len(questions)}."
             ),
         )
 
@@ -655,6 +710,7 @@ def create_diagnostic_attempt(
         student_id=current_user.id,
         started_at=_utcnow(),
         status=STATUS_IN_PROGRESS,
+        question_ids=_question_ids_from(questions),
     )
     db.add(attempt)
     db.commit()
@@ -810,11 +866,7 @@ def get_diagnostic_attempt_detail(
     student = db.query(User).filter(User.id == attempt.student_id).first()
     if student is None:
         raise HTTPException(status_code=404, detail="Student not found")
-    questions = (
-        db.query(DiagnosticQuestion)
-        .order_by(DiagnosticQuestion.order_index)
-        .all()
-    )
+    questions = _questions_for_attempt(db, attempt)
     answers = (
         db.query(DiagnosticAnswer)
         .filter(DiagnosticAnswer.attempt_id == attempt_id)
@@ -831,11 +883,7 @@ def get_attempt_questions(
 ):
     attempt = get_attempt_or_404(attempt_id, db)
     require_attempt_access(attempt, current_user)
-    questions = (
-        db.query(DiagnosticQuestion)
-        .order_by(DiagnosticQuestion.order_index)
-        .all()
-    )
+    questions = _questions_for_attempt(db, attempt)
     return [serialize_question_public(question) for question in questions]
 
 
@@ -865,6 +913,8 @@ def submit_diagnostic_answer(
         .first()
     )
     if question is None:
+        raise HTTPException(status_code=404, detail="Diagnostic question not found")
+    if not _question_belongs_to_attempt(attempt, question.id):
         raise HTTPException(status_code=404, detail="Diagnostic question not found")
 
     is_correct = data.selected_choice == (question.correct_choice or "").strip().upper()
@@ -911,6 +961,8 @@ def save_diagnostic_progress(
     )
     if question is None:
         raise HTTPException(status_code=404, detail="Diagnostic question not found")
+    if not _question_belongs_to_attempt(attempt, question.id):
+        raise HTTPException(status_code=404, detail="Diagnostic question not found")
 
     attempt.current_question_id = data.current_question_id
     if data.math_started_at is not None and attempt.math_started_at is None:
@@ -956,11 +1008,7 @@ def complete_diagnostic_attempt(
             SOFT_COMPLETION_LIMIT_MINUTES,
         )
 
-    questions = (
-        db.query(DiagnosticQuestion)
-        .order_by(DiagnosticQuestion.order_index)
-        .all()
-    )
+    questions = _questions_for_attempt(db, attempt)
     answers = (
         db.query(DiagnosticAnswer)
         .filter(DiagnosticAnswer.attempt_id == attempt_id)
