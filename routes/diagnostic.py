@@ -12,22 +12,39 @@ from dependencies.auth import (
     AuthUser,
     get_current_user,
     is_admin_or_mentor,
+    normalize_role,
     require_admin_or_mentor,
     require_staff,
 )
 from Methods.auth import get_db
-from models import DiagnosticAnswer, DiagnosticAttempt, DiagnosticQuestion
+from models import (
+    Class,
+    ClassEnrollment,
+    DiagnosticAnswer,
+    DiagnosticAttempt,
+    DiagnosticQuestion,
+    User,
+)
 from schemas.diagnostic import (
     ChoiceSchema,
+    DiagnosticAnswerReviewSchema,
     DiagnosticAnswerSchema,
     DiagnosticAnswerSubmit,
     DiagnosticAttemptCreatedSchema,
+    DiagnosticAttemptDetailSchema,
+    DiagnosticAttemptListItem,
     DiagnosticAttemptProgress,
     DiagnosticAttemptSchema,
     DiagnosticQuestionAdminSchema,
     DiagnosticQuestionCreate,
     DiagnosticQuestionPublicSchema,
     DiagnosticQuestionUpdate,
+    DiagnosticStudentSummary,
+)
+from dependencies.filters import (
+    classes_query,
+    diagnostic_attempts_query,
+    teacher_owns_class,
 )
 from services.cloudinary_service import delete_file, upload_file
 from services.diagnostic_config import (
@@ -233,6 +250,37 @@ def _can_access_attempt(user: AuthUser, attempt: DiagnosticAttempt) -> bool:
     return is_admin_or_mentor(user.role)
 
 
+def _teacher_can_view_student(db: Session, user: AuthUser, student_id: int) -> bool:
+    enrollments = (
+        db.query(ClassEnrollment)
+        .filter(ClassEnrollment.student_id == student_id)
+        .all()
+    )
+    if not enrollments:
+        return False
+    class_ids = [enrollment.class_id for enrollment in enrollments]
+    classes = (
+        classes_query(db, user)
+        .filter(Class.id.in_(class_ids))
+        .all()
+    )
+    return any(teacher_owns_class(user, class_obj) for class_obj in classes)
+
+
+def _can_review_attempt(
+    db: Session,
+    user: AuthUser,
+    attempt: DiagnosticAttempt,
+) -> bool:
+    if attempt.student_id == user.id:
+        return True
+    if is_admin_or_mentor(user.role):
+        return True
+    if normalize_role(user.role) == "teacher":
+        return _teacher_can_view_student(db, user, attempt.student_id)
+    return False
+
+
 def get_attempt_or_404(attempt_id: int, db: Session) -> DiagnosticAttempt:
     attempt = (
         db.query(DiagnosticAttempt)
@@ -250,6 +298,117 @@ def require_attempt_access(
 ) -> None:
     if not _can_access_attempt(user, attempt):
         raise HTTPException(status_code=403, detail="Not enough permissions")
+
+
+def require_attempt_review_access(
+    db: Session,
+    attempt: DiagnosticAttempt,
+    user: AuthUser,
+) -> None:
+    if attempt.student_id == user.id:
+        return
+    scoped = (
+        diagnostic_attempts_query(db, user)
+        .filter(DiagnosticAttempt.id == attempt.id)
+        .first()
+    )
+    if scoped is None:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if not _can_review_attempt(db, user, attempt):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+
+def _student_summary(user: User) -> DiagnosticStudentSummary:
+    return DiagnosticStudentSummary(
+        id=user.id,
+        name=user.name,
+        surname=user.surname,
+    )
+
+
+def serialize_attempt_list_item(
+    attempt: DiagnosticAttempt,
+    student: User | None = None,
+) -> dict:
+    payload = DiagnosticAttemptListItem(
+        attempt_id=attempt.id,
+        student_id=attempt.student_id,
+        status=attempt.status,
+        started_at=attempt.started_at,
+        completed_at=attempt.completed_at,
+        rw_points=attempt.rw_points,
+        math_points=attempt.math_points,
+        rw_scaled_estimate=attempt.rw_scaled_estimate,
+        math_scaled_estimate=attempt.math_scaled_estimate,
+        total_point_estimate=attempt.total_point_estimate,
+        total_range_low=attempt.total_range_low,
+        total_range_high=attempt.total_range_high,
+        student=_student_summary(student) if student is not None else None,
+    )
+    return payload.model_dump(mode="json")
+
+
+def serialize_attempt_detail(
+    attempt: DiagnosticAttempt,
+    student: User,
+    questions: list[DiagnosticQuestion],
+    answers: list[DiagnosticAnswer],
+) -> dict:
+    answers_by_question = {answer.question_id: answer for answer in answers}
+    review_answers: list[DiagnosticAnswerReviewSchema] = []
+    for question in questions:
+        answer = answers_by_question.get(question.id)
+        selected = answer.selected_choice if answer is not None else None
+        is_correct = answer.is_correct if answer is not None else None
+        explanation = (question.explanation or "").strip() or None
+        review_answers.append(
+            DiagnosticAnswerReviewSchema(
+                order_index=question.order_index,
+                section=question.section,
+                domain=question.domain,
+                difficulty=question.difficulty,
+                points=question.points,
+                question_text=question.question_text,
+                passage_text=question.passage_text,
+                question_image=question.question_image,
+                image_scale=_resolved_image_scale(question),
+                choices=_parse_choices(question.choices),
+                selected_choice=selected,
+                correct_choice=question.correct_choice,
+                is_correct=is_correct,
+                explanation=explanation,
+            )
+        )
+    payload = DiagnosticAttemptDetailSchema(
+        attempt_id=attempt.id,
+        student=_student_summary(student),
+        completed_at=attempt.completed_at,
+        status=attempt.status,
+        rw_points=attempt.rw_points,
+        math_points=attempt.math_points,
+        rw_scaled_estimate=attempt.rw_scaled_estimate,
+        math_scaled_estimate=attempt.math_scaled_estimate,
+        total_point_estimate=attempt.total_point_estimate,
+        total_range_low=attempt.total_range_low,
+        total_range_high=attempt.total_range_high,
+        answers=review_answers,
+    )
+    return payload.model_dump(mode="json")
+
+
+def _sorted_attempts(attempts: list[DiagnosticAttempt]) -> list[DiagnosticAttempt]:
+    return sorted(
+        attempts,
+        key=lambda item: item.completed_at or item.started_at,
+        reverse=True,
+    )
+
+
+def _users_by_id(db: Session, user_ids: list[int]) -> dict[int, User]:
+    if not user_ids:
+        return {}
+    rows = db.query(User).filter(User.id.in_(user_ids)).all()
+    return {row.id: row for row in rows}
 
 
 def _question_from_payload(
@@ -458,48 +617,12 @@ def list_diagnostic_questions(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(require_staff),
 ):
-    try:
-        questions = (
-            db.query(DiagnosticQuestion)
-            .order_by(DiagnosticQuestion.order_index)
-            .all()
-        )
-        # #region agent log
-        try:
-            import json
-            import time
-            with open("/Users/rassulkaa/Desktop/rassulkaa/turan/.cursor/debug-b71801.log", "a", encoding="utf-8") as _dbg:
-                _dbg.write(json.dumps({
-                    "sessionId": "b71801",
-                    "runId": "post-fix",
-                    "hypothesisId": "A",
-                    "location": "diagnostic.py:list_diagnostic_questions",
-                    "message": "listed diagnostic questions",
-                    "data": {"count": len(questions), "role": current_user.role},
-                    "timestamp": int(time.time() * 1000),
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        return [serialize_question_admin(question) for question in questions]
-    except Exception as exc:
-        # #region agent log
-        try:
-            import json
-            import time
-            with open("/Users/rassulkaa/Desktop/rassulkaa/turan/.cursor/debug-b71801.log", "a", encoding="utf-8") as _dbg:
-                _dbg.write(json.dumps({
-                    "sessionId": "b71801",
-                    "hypothesisId": "A",
-                    "location": "diagnostic.py:list_diagnostic_questions",
-                    "message": "list diagnostic questions failed",
-                    "data": {"error_type": type(exc).__name__, "error": str(exc)[:220]},
-                    "timestamp": int(time.time() * 1000),
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        raise
+    questions = (
+        db.query(DiagnosticQuestion)
+        .order_by(DiagnosticQuestion.order_index)
+        .all()
+    )
+    return [serialize_question_admin(question) for question in questions]
 
 
 @router.post("/diagnostic/attempts", response_model=DiagnosticAttemptCreatedSchema)
@@ -543,16 +666,116 @@ def create_diagnostic_attempt(
     )
 
 
-@router.get("/diagnostic/attempts")
-def list_diagnostic_attempts(
+def _list_attempts_for_student(
+    db: Session,
+    user: AuthUser,
+    student_id: int,
+    *,
+    include_student: bool,
+) -> list[dict]:
+    if normalize_role(user.role) == "student" and student_id != user.id:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if normalize_role(user.role) == "teacher" and not _teacher_can_view_student(
+        db, user, student_id
+    ):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    if (
+        normalize_role(user.role) not in ("admin", "mentor", "teacher", "student")
+    ):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+
+    attempts = _sorted_attempts(
+        diagnostic_attempts_query(db, user)
+        .filter(DiagnosticAttempt.student_id == student_id)
+        .all()
+    )
+    student = None
+    if include_student:
+        student = db.query(User).filter(User.id == student_id).first()
+    return [
+        serialize_attempt_list_item(attempt, student=student)
+        for attempt in attempts
+    ]
+
+
+@router.get("/diagnostic/attempts/me")
+def list_my_diagnostic_attempts(
     db: Session = Depends(get_db),
     current_user: AuthUser = Depends(get_current_user),
 ):
-    attempts = (
-        db.query(DiagnosticAttempt)
-        .filter(DiagnosticAttempt.student_id == current_user.id)
-        .order_by(DiagnosticAttempt.started_at.desc())
-        .all()
+    if normalize_role(current_user.role) != "student":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return _list_attempts_for_student(
+        db,
+        current_user,
+        current_user.id,
+        include_student=False,
+    )
+
+
+@router.get("/diagnostic/attempts")
+def list_diagnostic_attempts(
+    student_id: int | None = None,
+    class_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    role = normalize_role(current_user.role)
+    if student_id is not None and class_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either student_id or class_id, not both",
+        )
+
+    if student_id is not None:
+        if role == "student" and student_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        if role not in ("admin", "mentor", "teacher", "student"):
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        return _list_attempts_for_student(
+            db,
+            current_user,
+            student_id,
+            include_student=role != "student",
+        )
+
+    if class_id is not None:
+        if role not in ("admin", "mentor", "teacher"):
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        class_obj = db.query(Class).filter(Class.id == class_id).first()
+        if class_obj is None:
+            raise HTTPException(status_code=404, detail="Class not found")
+        if not teacher_owns_class(current_user, class_obj):
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        enrollments = (
+            db.query(ClassEnrollment)
+            .filter(ClassEnrollment.class_id == class_id)
+            .all()
+        )
+        student_ids = [enrollment.student_id for enrollment in enrollments]
+        if not student_ids:
+            return []
+        attempts = _sorted_attempts(
+            diagnostic_attempts_query(db, current_user)
+            .filter(DiagnosticAttempt.student_id.in_(student_ids))
+            .all()
+        )
+        students = _users_by_id(db, student_ids)
+        return [
+            serialize_attempt_list_item(
+                attempt,
+                student=students.get(attempt.student_id),
+            )
+            for attempt in attempts
+        ]
+
+    if role != "student":
+        raise HTTPException(
+            status_code=400,
+            detail="student_id or class_id is required",
+        )
+    attempts = _sorted_attempts(
+        diagnostic_attempts_query(db, current_user).all()
     )
     payloads = []
     for attempt in attempts:
@@ -569,6 +792,35 @@ def list_diagnostic_attempts(
             )
         )
     return payloads
+
+
+@router.get("/diagnostic/attempts/{attempt_id}/detail")
+def get_diagnostic_attempt_detail(
+    attempt_id: int,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    attempt = get_attempt_or_404(attempt_id, db)
+    require_attempt_review_access(db, attempt, current_user)
+    if attempt.status != STATUS_COMPLETED:
+        raise HTTPException(
+            status_code=409,
+            detail="Review is only available for completed attempts",
+        )
+    student = db.query(User).filter(User.id == attempt.student_id).first()
+    if student is None:
+        raise HTTPException(status_code=404, detail="Student not found")
+    questions = (
+        db.query(DiagnosticQuestion)
+        .order_by(DiagnosticQuestion.order_index)
+        .all()
+    )
+    answers = (
+        db.query(DiagnosticAnswer)
+        .filter(DiagnosticAnswer.attempt_id == attempt_id)
+        .all()
+    )
+    return serialize_attempt_detail(attempt, student, questions, answers)
 
 
 @router.get("/diagnostic/attempts/{attempt_id}/questions")

@@ -209,3 +209,57 @@ class DiagnosticAttemptCreatedSchema(BaseModel):
     attempt_id: int
     status: str
     started_at: datetime
+
+
+class DiagnosticStudentSummary(BaseModel):
+    id: int
+    name: str
+    surname: str
+
+
+class DiagnosticAttemptListItem(BaseModel):
+    attempt_id: int
+    student_id: int
+    status: str
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    rw_points: Optional[int] = None
+    math_points: Optional[int] = None
+    rw_scaled_estimate: Optional[int] = None
+    math_scaled_estimate: Optional[int] = None
+    total_point_estimate: Optional[int] = None
+    total_range_low: Optional[int] = None
+    total_range_high: Optional[int] = None
+    student: Optional[DiagnosticStudentSummary] = None
+
+
+class DiagnosticAnswerReviewSchema(BaseModel):
+    order_index: int
+    section: str
+    domain: str
+    difficulty: str
+    points: int
+    question_text: str
+    passage_text: Optional[str] = None
+    question_image: Optional[str] = None
+    image_scale: float = 0.85
+    choices: list[ChoiceSchema]
+    selected_choice: Optional[str] = None
+    correct_choice: str
+    is_correct: Optional[bool] = None
+    explanation: Optional[str] = None
+
+
+class DiagnosticAttemptDetailSchema(BaseModel):
+    attempt_id: int
+    student: DiagnosticStudentSummary
+    completed_at: Optional[datetime] = None
+    status: str
+    rw_points: Optional[int] = None
+    math_points: Optional[int] = None
+    rw_scaled_estimate: Optional[int] = None
+    math_scaled_estimate: Optional[int] = None
+    total_point_estimate: Optional[int] = None
+    total_range_low: Optional[int] = None
+    total_range_high: Optional[int] = None
+    answers: list[DiagnosticAnswerReviewSchema]

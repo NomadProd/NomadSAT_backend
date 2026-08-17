@@ -9,6 +9,7 @@ from models import (
     Attendance,
     Class,
     ClassEnrollment,
+    DiagnosticAttempt,
     HomeworkResult,
     MockResult,
     Session as ClassSession,
@@ -109,6 +110,40 @@ def mock_results_query(db: Session, user: AuthUser) -> Query:
         return query.filter(MockResult.student_id == user.id)
 
     return query.filter(MockResult.id == -1)
+
+
+def teacher_owns_class(user: AuthUser, class_obj: Class) -> bool:
+    role = normalize_role(user.role)
+    if role in ("admin", "mentor"):
+        return True
+    if role == "teacher":
+        return user.id in (class_obj.verbal_teacher_id, class_obj.math_teacher_id)
+    return False
+
+
+def diagnostic_attempts_query(db: Session, user: AuthUser) -> Query:
+    query = db.query(DiagnosticAttempt)
+    role = normalize_role(user.role)
+
+    if role in ("admin", "mentor"):
+        return query
+    if role == "teacher":
+        class_ids = [item.id for item in classes_query(db, user).all()]
+        if not class_ids:
+            return query.filter(DiagnosticAttempt.id == -1)
+        student_ids = [
+            enrollment.student_id
+            for enrollment in db.query(ClassEnrollment)
+            .filter(ClassEnrollment.class_id.in_(class_ids))
+            .all()
+        ]
+        if not student_ids:
+            return query.filter(DiagnosticAttempt.id == -1)
+        return query.filter(DiagnosticAttempt.student_id.in_(student_ids))
+    if role == "student":
+        return query.filter(DiagnosticAttempt.student_id == user.id)
+
+    return query.filter(DiagnosticAttempt.id == -1)
 
 
 def attendance_query(db: Session, user: AuthUser) -> Query:

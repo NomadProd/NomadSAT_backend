@@ -8,7 +8,14 @@ from fastapi.testclient import TestClient
 from dependencies.auth import AuthUser, get_current_user
 from main import app
 from Methods.auth import get_db
-from models import DiagnosticAnswer, DiagnosticAttempt, DiagnosticQuestion
+from models import (
+    Class,
+    ClassEnrollment,
+    DiagnosticAnswer,
+    DiagnosticAttempt,
+    DiagnosticQuestion,
+    User,
+)
 from services.diagnostic_config import QUESTION_LAYOUT
 from services.diagnostic_scoring import estimate_result
 
@@ -48,11 +55,17 @@ class FakeSession:
             DiagnosticQuestion: [],
             DiagnosticAttempt: [],
             DiagnosticAnswer: [],
+            User: [],
+            Class: [],
+            ClassEnrollment: [],
         }
         self.counters = {
             DiagnosticQuestion: 1,
             DiagnosticAttempt: 1,
             DiagnosticAnswer: 1,
+            User: 1,
+            Class: 1,
+            ClassEnrollment: 1,
         }
         self.committed = False
 
@@ -61,9 +74,12 @@ class FakeSession:
 
     def add(self, obj):
         model = type(obj)
-        if getattr(obj, "id", None) is None:
+        current_id = getattr(obj, "id", None)
+        if current_id is None and model in self.counters:
             obj.id = self.counters[model]
             self.counters[model] += 1
+        elif isinstance(current_id, int) and model in self.counters:
+            self.counters[model] = max(self.counters[model], current_id + 1)
         bucket = self.store.setdefault(model, [])
         if obj not in bucket:
             bucket.append(obj)
@@ -83,13 +99,33 @@ class FakeSession:
         return None
 
     def matches(self, row, clause) -> bool:
-        try:
-            key = clause.left.key
-            right = clause.right
-            expected = right.value if hasattr(right, "value") else right
-            return getattr(row, key) == expected
-        except Exception:
-            return True
+        clauses = getattr(clause, "clauses", None)
+        operator = getattr(clause, "operator", None)
+        if clauses is not None and operator is not None:
+            parts = [self.matches(row, child) for child in clauses]
+            op_name = getattr(operator, "__name__", str(operator))
+            if op_name in ("or_", "or"):
+                return any(parts)
+            return all(parts)
+
+        left = getattr(clause, "left", None)
+        right = getattr(clause, "right", None)
+        key = getattr(left, "key", None)
+        if key is None:
+            return False
+        actual = getattr(row, key, None)
+        expected = right.value if hasattr(right, "value") else right
+        op_name = getattr(operator, "__name__", "")
+        if operator is not None and (
+            op_name in ("in_op", "in_") or getattr(operator, "__name__", "") == "in_op"
+        ):
+            values = expected
+            if isinstance(values, (list, tuple, set)):
+                return actual in values
+            return False
+        if op_name in ("is_", "is"):
+            return actual is expected or actual == expected
+        return actual == expected
 
 
 @pytest.fixture
@@ -168,6 +204,75 @@ def _seed_questions(db: FakeSession, count: int = 20) -> list[DiagnosticQuestion
         db.add(question)
         questions.append(question)
     return questions
+
+
+def _seed_user(
+    db: FakeSession,
+    user_id: int,
+    *,
+    name: str = "Ada",
+    surname: str = "Lovelace",
+    role: str = "student",
+) -> User:
+    user = User(
+        id=user_id,
+        email=f"user{user_id}@turan.test",
+        hashed_password="x",
+        name=name,
+        surname=surname,
+        role=role,
+    )
+    db.add(user)
+    return user
+
+
+def _seed_class(
+    db: FakeSession,
+    class_id: int,
+    *,
+    verbal_teacher_id: int | None = None,
+    math_teacher_id: int | None = None,
+    archived: bool = False,
+) -> Class:
+    class_obj = Class(
+        id=class_id,
+        name=f"Class {class_id}",
+        archived=archived,
+        verbal_teacher_id=verbal_teacher_id,
+        math_teacher_id=math_teacher_id,
+    )
+    db.add(class_obj)
+    return class_obj
+
+
+def _enroll(db: FakeSession, class_id: int, student_id: int) -> None:
+    db.add(ClassEnrollment(class_id=class_id, student_id=student_id))
+
+
+def _completed_attempt(
+    db: FakeSession,
+    student_id: int,
+    *,
+    completed_at: datetime | None = None,
+    total_range_low: int = 1220,
+    total_range_high: int = 1380,
+) -> DiagnosticAttempt:
+    finished = completed_at or _utcnow()
+    attempt = DiagnosticAttempt(
+        student_id=student_id,
+        started_at=finished,
+        completed_at=finished,
+        status="completed",
+        rw_points=30,
+        math_points=40,
+        rw_scaled_estimate=600,
+        math_scaled_estimate=700,
+        total_point_estimate=1300,
+        total_range_low=total_range_low,
+        total_range_high=total_range_high,
+    )
+    db.add(attempt)
+    return attempt
 
 
 def test_create_attempt_returns_in_progress_id(client: TestClient):
@@ -595,3 +700,209 @@ def test_save_progress_rejected_when_not_in_progress(client: TestClient):
         json={"current_question_id": questions[0].id},
     )
     assert response.status_code == 409
+
+
+def test_student_me_returns_only_own_attempts(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7)
+    _seed_user(db, 8, name="Other", surname="Student")
+    mine_new = _completed_attempt(
+        db,
+        7,
+        completed_at=datetime(2026, 8, 16, tzinfo=timezone.utc),
+        total_range_low=1280,
+        total_range_high=1440,
+    )
+    mine_old = _completed_attempt(
+        db,
+        7,
+        completed_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+        total_range_low=1200,
+        total_range_high=1360,
+    )
+    _completed_attempt(db, 8)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    response = client.get("/diagnostic/attempts/me")
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["attempt_id"] for item in body] == [mine_new.id, mine_old.id]
+    assert all(item["student_id"] == 7 for item in body)
+    assert body[0]["total_range_low"] == 1280
+    assert body[0]["total_range_high"] == 1440
+
+
+def test_student_cannot_fetch_another_students_attempt_detail(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7)
+    _seed_user(db, 8, name="Other", surname="Student")
+    questions = _seed_questions(db, count=1)
+    attempt = _completed_attempt(db, 8)
+    db.add(
+        DiagnosticAnswer(
+            attempt_id=attempt.id,
+            question_id=questions[0].id,
+            selected_choice="B",
+            is_correct=True,
+            answered_at=_utcnow(),
+        )
+    )
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    response = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert response.status_code == 403
+
+
+def test_student_own_completed_detail_includes_answer_key(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7)
+    questions = _seed_questions(db, count=2)
+    attempt = _completed_attempt(db, 7)
+    db.add(
+        DiagnosticAnswer(
+            attempt_id=attempt.id,
+            question_id=questions[0].id,
+            selected_choice="A",
+            is_correct=False,
+            answered_at=_utcnow(),
+        )
+    )
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    response = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["attempt_id"] == attempt.id
+    answers = body["answers"]
+    assert len(answers) == 2
+    first = answers[0]
+    assert first["selected_choice"] == "A"
+    assert first["correct_choice"] == "B"
+    assert first["is_correct"] is False
+    assert first["explanation"] == "Explanation 1"
+    unanswered = answers[1]
+    assert unanswered["selected_choice"] is None
+    assert unanswered["is_correct"] is None
+    assert unanswered["correct_choice"] == "B"
+
+
+def test_in_progress_attempt_detail_returns_conflict(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7)
+    _seed_questions(db, count=1)
+    attempt = DiagnosticAttempt(
+        student_id=7,
+        started_at=_utcnow(),
+        status="in_progress",
+    )
+    db.add(attempt)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    response = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert response.status_code == 409
+    assert "completed" in response.json()["detail"].lower()
+
+
+def test_teacher_can_fetch_detail_for_student_in_own_class(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7)
+    _seed_user(db, 10, name="Pat", surname="Teacher", role="teacher")
+    _seed_class(db, 1, verbal_teacher_id=10)
+    _enroll(db, 1, 7)
+    questions = _seed_questions(db, count=1)
+    attempt = _completed_attempt(db, 7)
+    db.add(
+        DiagnosticAnswer(
+            attempt_id=attempt.id,
+            question_id=questions[0].id,
+            selected_choice="B",
+            is_correct=True,
+            answered_at=_utcnow(),
+        )
+    )
+    _override_db(db)
+    _override_user("teacher", user_id=10)
+
+    response = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["student"]["id"] == 7
+    assert body["answers"][0]["correct_choice"] == "B"
+
+
+def test_teacher_forbidden_for_student_outside_own_class(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7)
+    _seed_user(db, 8, name="Other", surname="Student")
+    _seed_user(db, 10, name="Pat", surname="Teacher", role="teacher")
+    _seed_class(db, 1, verbal_teacher_id=10)
+    _seed_class(db, 2, verbal_teacher_id=99)
+    _enroll(db, 1, 7)
+    _enroll(db, 2, 8)
+    _seed_questions(db, count=1)
+    attempt = _completed_attempt(db, 8)
+    _override_db(db)
+    _override_user("teacher", user_id=10)
+
+    response = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert response.status_code == 403
+
+
+def test_mentor_and_admin_can_fetch_any_student_detail(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 8, name="Other", surname="Student")
+    questions = _seed_questions(db, count=1)
+    attempt = _completed_attempt(db, 8)
+    db.add(
+        DiagnosticAnswer(
+            attempt_id=attempt.id,
+            question_id=questions[0].id,
+            selected_choice="C",
+            is_correct=False,
+            answered_at=_utcnow(),
+        )
+    )
+    _override_db(db)
+
+    _override_user("mentor", user_id=3)
+    mentor = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert mentor.status_code == 200
+    assert mentor.json()["student"]["id"] == 8
+
+    _override_user("admin", user_id=1)
+    admin = client.get(f"/diagnostic/attempts/{attempt.id}/detail")
+    assert admin.status_code == 200
+    assert admin.json()["answers"][0]["correct_choice"] == "B"
+
+
+def test_class_attempts_are_scoped_by_role(client: TestClient):
+    db = FakeSession()
+    _seed_user(db, 7, name="In", surname="Class")
+    _seed_user(db, 8, name="Out", surname="Class")
+    _seed_user(db, 10, name="Pat", surname="Teacher", role="teacher")
+    _seed_class(db, 1, verbal_teacher_id=10)
+    _seed_class(db, 2, math_teacher_id=99)
+    _enroll(db, 1, 7)
+    _enroll(db, 2, 8)
+    in_class = _completed_attempt(db, 7)
+    _completed_attempt(db, 8)
+    _override_db(db)
+
+    _override_user("teacher", user_id=10)
+    teacher = client.get("/diagnostic/attempts", params={"class_id": 1})
+    assert teacher.status_code == 200
+    teacher_ids = [item["attempt_id"] for item in teacher.json()]
+    assert teacher_ids == [in_class.id]
+    assert teacher.json()[0]["student"]["id"] == 7
+
+    outsider = client.get("/diagnostic/attempts", params={"class_id": 2})
+    assert outsider.status_code == 403
+
+    _override_user("admin", user_id=1)
+    admin = client.get("/diagnostic/attempts", params={"class_id": 2})
+    assert admin.status_code == 200
+    assert {item["student_id"] for item in admin.json()} == {8}
