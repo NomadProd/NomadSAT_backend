@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -746,6 +746,7 @@ def test_save_progress_sets_math_start_once_and_updates_question(client: TestCli
         student_id=7,
         started_at=_utcnow(),
         status="in_progress",
+        timer_pause_seconds=40,
     )
     db.add(attempt)
     _override_db(db)
@@ -762,6 +763,8 @@ def test_save_progress_sets_math_start_once_and_updates_question(client: TestCli
     assert first.status_code == 200
     assert first.json()["current_question_id"] == questions[10].id
     assert attempt.math_started_at == first_start
+    assert attempt.timer_pause_seconds == 0
+    assert attempt.timer_paused_at is None
 
     later_start = datetime(2026, 8, 17, 9, 20, tzinfo=timezone.utc)
     second = client.patch(
@@ -775,6 +778,56 @@ def test_save_progress_sets_math_start_once_and_updates_question(client: TestCli
     assert second.json()["current_question_id"] == questions[12].id
     assert attempt.math_started_at == first_start
     assert attempt.current_question_id == questions[12].id
+
+
+def test_save_progress_pauses_and_resumes_section_timer(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db, count=1)
+    paused_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    attempt = DiagnosticAttempt(
+        student_id=7,
+        started_at=_utcnow(),
+        status="in_progress",
+        timer_paused_at=paused_at,
+        timer_pause_seconds=12,
+    )
+    db.add(attempt)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    resumed = client.patch(
+        f"/diagnostic/attempts/{attempt.id}/progress",
+        json={
+            "current_question_id": questions[0].id,
+            "pause_timer": False,
+        },
+    )
+    assert resumed.status_code == 200
+    body = resumed.json()
+    assert body["timer_paused_at"] is None
+    assert 40 <= body["timer_pause_seconds"] <= 50
+    assert attempt.timer_paused_at is None
+
+    paused = client.patch(
+        f"/diagnostic/attempts/{attempt.id}/progress",
+        json={
+            "current_question_id": questions[0].id,
+            "pause_timer": True,
+        },
+    )
+    assert paused.status_code == 200
+    assert paused.json()["timer_paused_at"] is not None
+    first_paused_at = attempt.timer_paused_at
+
+    paused_again = client.patch(
+        f"/diagnostic/attempts/{attempt.id}/progress",
+        json={
+            "current_question_id": questions[0].id,
+            "pause_timer": True,
+        },
+    )
+    assert paused_again.status_code == 200
+    assert attempt.timer_paused_at == first_paused_at
 
 
 def test_save_progress_rejected_when_not_in_progress(client: TestClient):
@@ -1000,3 +1053,17 @@ def test_class_attempts_are_scoped_by_role(client: TestClient):
     admin = client.get("/diagnostic/attempts", params={"class_id": 2})
     assert admin.status_code == 200
     assert {item["student_id"] for item in admin.json()} == {8}
+
+
+def test_unscoped_attempts_list_returns_own_rows_for_admin(client: TestClient):
+    db = FakeSession()
+    own = _completed_attempt(db, 1)
+    _completed_attempt(db, 8)
+    _override_db(db)
+    _override_user("admin", user_id=1)
+
+    response = client.get("/diagnostic/attempts")
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body] == [own.id]
+    assert body[0]["student_id"] == 1

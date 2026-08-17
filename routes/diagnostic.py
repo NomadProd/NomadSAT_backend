@@ -231,6 +231,8 @@ def serialize_attempt(
         total_range_high=attempt.total_range_high,
         math_started_at=attempt.math_started_at,
         current_question_id=attempt.current_question_id,
+        timer_paused_at=getattr(attempt, "timer_paused_at", None),
+        timer_pause_seconds=int(getattr(attempt, "timer_pause_seconds", 0) or 0),
         answers=[
             DiagnosticAnswerSchema(
                 question_id=answer.question_id,
@@ -825,13 +827,10 @@ def list_diagnostic_attempts(
             for attempt in attempts
         ]
 
-    if role != "student":
-        raise HTTPException(
-            status_code=400,
-            detail="student_id or class_id is required",
-        )
     attempts = _sorted_attempts(
-        diagnostic_attempts_query(db, current_user).all()
+        db.query(DiagnosticAttempt)
+        .filter(DiagnosticAttempt.student_id == current_user.id)
+        .all()
     )
     payloads = []
     for attempt in attempts:
@@ -967,11 +966,32 @@ def save_diagnostic_progress(
     attempt.current_question_id = data.current_question_id
     if data.math_started_at is not None and attempt.math_started_at is None:
         attempt.math_started_at = _as_utc(data.math_started_at)
+        attempt.timer_paused_at = None
+        attempt.timer_pause_seconds = 0
+
+    if data.pause_timer is True:
+        if getattr(attempt, "timer_paused_at", None) is None:
+            attempt.timer_paused_at = datetime.now(timezone.utc)
+    elif data.pause_timer is False:
+        paused_at = getattr(attempt, "timer_paused_at", None)
+        if paused_at is not None:
+            extra = int(
+                (datetime.now(timezone.utc) - _as_utc(paused_at)).total_seconds()
+            )
+            if extra < 0:
+                extra = 0
+            attempt.timer_pause_seconds = (
+                int(getattr(attempt, "timer_pause_seconds", 0) or 0) + extra
+            )
+            attempt.timer_paused_at = None
+
     db.commit()
     db.refresh(attempt)
     return {
         "current_question_id": attempt.current_question_id,
         "math_started_at": attempt.math_started_at,
+        "timer_paused_at": attempt.timer_paused_at,
+        "timer_pause_seconds": int(getattr(attempt, "timer_pause_seconds", 0) or 0),
     }
 
 

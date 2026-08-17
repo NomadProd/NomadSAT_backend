@@ -197,12 +197,15 @@ class DiagnosticAttemptSchema(BaseModel):
     total_range_high: Optional[int] = None
     math_started_at: Optional[datetime] = None
     current_question_id: Optional[int] = None
+    timer_paused_at: Optional[datetime] = None
+    timer_pause_seconds: int = 0
     answers: list[DiagnosticAnswerSchema] = []
 
 
 class DiagnosticAttemptProgress(BaseModel):
     current_question_id: int
     math_started_at: Optional[datetime] = None
+    pause_timer: Optional[bool] = None
 
 
 class DiagnosticAttemptCreatedSchema(BaseModel):

@@ -314,6 +314,8 @@ class DiagnosticAttempt(Base):
         ForeignKey("diagnostic_questions.id"),
         nullable=True,
     )
+    timer_paused_at = Column(DateTime(timezone=True), nullable=True)
+    timer_pause_seconds = Column(Integer, nullable=False, default=0, server_default="0")
     question_ids = Column(JSONB, nullable=True)
 
     student = relationship(
