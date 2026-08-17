@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dependencies.auth import (
@@ -27,6 +29,7 @@ from schemas.diagnostic import (
     DiagnosticQuestionPublicSchema,
     DiagnosticQuestionUpdate,
 )
+from services.cloudinary_service import delete_file, upload_file
 from services.diagnostic_config import (
     QUESTION_COUNT,
     SECTION_MATH,
@@ -42,9 +45,94 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["diagnostic"])
 
+MAX_QUESTION_IMAGE_BYTES = 10 * 1024 * 1024
+ALLOWED_QUESTION_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/heic",
+}
+QUESTION_IMAGE_EXTENSIONS = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic",
+}
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _lookup_answer(
+    db: Session,
+    *,
+    attempt_id: int,
+    question_id: int,
+) -> DiagnosticAnswer | None:
+    return (
+        db.query(DiagnosticAnswer)
+        .filter(
+            DiagnosticAnswer.attempt_id == attempt_id,
+            DiagnosticAnswer.question_id == question_id,
+        )
+        .first()
+    )
+
+
+def _apply_answer(
+    answer: DiagnosticAnswer,
+    *,
+    selected_choice: str,
+    is_correct: bool,
+    answered_at: datetime,
+) -> None:
+    answer.selected_choice = selected_choice
+    answer.is_correct = is_correct
+    answer.answered_at = answered_at
+
+
+def _upsert_diagnostic_answer(
+    db: Session,
+    *,
+    attempt_id: int,
+    question_id: int,
+    selected_choice: str,
+    is_correct: bool,
+    answered_at: datetime,
+) -> DiagnosticAnswer:
+    answer = _lookup_answer(db, attempt_id=attempt_id, question_id=question_id)
+    if answer is None:
+        answer = DiagnosticAnswer(
+            attempt_id=attempt_id,
+            question_id=question_id,
+        )
+        db.add(answer)
+    _apply_answer(
+        answer,
+        selected_choice=selected_choice,
+        is_correct=is_correct,
+        answered_at=answered_at,
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        answer = _lookup_answer(db, attempt_id=attempt_id, question_id=question_id)
+        if answer is None:
+            raise
+        _apply_answer(
+            answer,
+            selected_choice=selected_choice,
+            is_correct=is_correct,
+            answered_at=answered_at,
+        )
+        db.commit()
+    db.refresh(answer)
+    return answer
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -59,6 +147,13 @@ def _parse_choices(raw) -> list[ChoiceSchema]:
     return [ChoiceSchema.model_validate(item) for item in raw]
 
 
+def _resolved_image_scale(question: DiagnosticQuestion) -> float:
+    value = getattr(question, "image_scale", None)
+    if value is None:
+        return 0.85
+    return min(1.0, max(0.4, float(value)))
+
+
 def serialize_question_admin(question: DiagnosticQuestion) -> dict:
     payload = DiagnosticQuestionAdminSchema(
         id=question.id,
@@ -67,8 +162,12 @@ def serialize_question_admin(question: DiagnosticQuestion) -> dict:
         difficulty=question.difficulty,
         points=question.points,
         order_index=question.order_index,
+        passage_text=question.passage_text,
         question_text=question.question_text,
+        question_url=question.question_url,
         question_image=question.question_image,
+        question_image_public_id=question.question_image_public_id,
+        image_scale=_resolved_image_scale(question),
         choices=_parse_choices(question.choices),
         correct_choice=question.correct_choice,
         explanation=question.explanation,
@@ -85,8 +184,10 @@ def serialize_question_public(question: DiagnosticQuestion) -> dict:
         domain=question.domain,
         difficulty=question.difficulty,
         order_index=question.order_index,
+        passage_text=question.passage_text,
         question_text=question.question_text,
         question_image=question.question_image,
+        image_scale=_resolved_image_scale(question),
         choices=_parse_choices(question.choices),
     )
     return payload.model_dump(mode="json")
@@ -163,8 +264,12 @@ def _question_from_payload(
     question.difficulty = data.difficulty
     question.points = data.points
     question.order_index = data.order_index
+    question.passage_text = data.passage_text
     question.question_text = data.question_text
+    question.question_url = data.question_url
     question.question_image = data.question_image
+    question.question_image_public_id = data.question_image_public_id
+    question.image_scale = data.image_scale
     question.choices = [choice.model_dump() for choice in data.choices]
     question.correct_choice = data.correct_choice
     question.explanation = data.explanation
@@ -191,6 +296,69 @@ def _order_index_taken(
     return True
 
 
+def _question_url_taken(
+    db: Session,
+    question_url: str | None,
+    *,
+    exclude_id: int | None = None,
+) -> bool:
+    if not question_url:
+        return False
+    query = db.query(DiagnosticQuestion).filter(
+        DiagnosticQuestion.question_url == question_url
+    )
+    existing = query.first()
+    if existing is None:
+        return False
+    if exclude_id is not None and existing.id == exclude_id:
+        return False
+    return True
+
+
+def _question_image_content_type(filename: str, reported: str | None) -> str | None:
+    normalized = (reported or "").split(";", 1)[0].strip().lower()
+    if normalized in ALLOWED_QUESTION_IMAGE_TYPES:
+        return normalized
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext in QUESTION_IMAGE_EXTENSIONS:
+        return QUESTION_IMAGE_EXTENSIONS[ext]
+    guessed, _ = mimetypes.guess_type(filename)
+    if guessed and guessed in ALLOWED_QUESTION_IMAGE_TYPES:
+        return guessed
+    return None
+
+
+@router.post("/diagnostic/questions/image")
+async def upload_diagnostic_question_image(
+    file: UploadFile = File(...),
+    current_user: AuthUser = Depends(require_admin_or_mentor),
+):
+    filename = file.filename or "question.png"
+    content_type = _question_image_content_type(filename, file.content_type)
+    if content_type is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Upload a JPEG, PNG, GIF, WEBP, or HEIC image",
+        )
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=422, detail="The image file is empty")
+    if len(payload) > MAX_QUESTION_IMAGE_BYTES:
+        raise HTTPException(status_code=422, detail="File size cannot exceed 10mb")
+    uploaded = upload_file(
+        payload,
+        result_id=current_user.id,
+        filename=filename,
+        content_type=content_type,
+        folder="diagnostic_questions",
+        public_id_prefix="diagnostic",
+    )
+    return {
+        "url": uploaded["url"],
+        "public_id": uploaded["public_id"],
+    }
+
+
 @router.post("/diagnostic/questions")
 def create_diagnostic_question(
     data: DiagnosticQuestionCreate,
@@ -201,6 +369,11 @@ def create_diagnostic_question(
         raise HTTPException(
             status_code=409,
             detail=f"A question already exists for order_index {data.order_index}",
+        )
+    if _question_url_taken(db, data.question_url):
+        raise HTTPException(
+            status_code=409,
+            detail="A question with this URL already exists",
         )
     question = _question_from_payload(data, created_by_id=current_user.id)
     db.add(question)
@@ -228,6 +401,12 @@ def update_diagnostic_question(
             status_code=409,
             detail=f"A question already exists for order_index {data.order_index}",
         )
+    if _question_url_taken(db, data.question_url, exclude_id=question.id):
+        raise HTTPException(
+            status_code=409,
+            detail="A question with this URL already exists",
+        )
+    old_public_id = question.question_image_public_id
     _question_from_payload(
         data,
         created_by_id=current_user.id,
@@ -235,6 +414,8 @@ def update_diagnostic_question(
     )
     db.commit()
     db.refresh(question)
+    if old_public_id and old_public_id != question.question_image_public_id:
+        delete_file(old_public_id, "image/jpeg")
     return serialize_question_admin(question)
 
 
@@ -264,8 +445,11 @@ def delete_diagnostic_question(
                 "Historical attempts would be corrupted."
             ),
         )
+    public_id = question.question_image_public_id
     db.delete(question)
     db.commit()
+    if public_id:
+        delete_file(public_id, "image/jpeg")
     return {"ok": True, "id": question_id}
 
 
@@ -433,26 +617,14 @@ def submit_diagnostic_answer(
 
     is_correct = data.selected_choice == (question.correct_choice or "").strip().upper()
     now = _utcnow()
-    answer = (
-        db.query(DiagnosticAnswer)
-        .filter(
-            DiagnosticAnswer.attempt_id == attempt_id,
-            DiagnosticAnswer.question_id == data.question_id,
-        )
-        .first()
+    answer = _upsert_diagnostic_answer(
+        db,
+        attempt_id=attempt_id,
+        question_id=data.question_id,
+        selected_choice=data.selected_choice,
+        is_correct=is_correct,
+        answered_at=now,
     )
-    if answer is None:
-        answer = DiagnosticAnswer(
-            attempt_id=attempt_id,
-            question_id=data.question_id,
-        )
-        db.add(answer)
-
-    answer.selected_choice = data.selected_choice
-    answer.is_correct = is_correct
-    answer.answered_at = now
-    db.commit()
-    db.refresh(answer)
     return {
         "question_id": answer.question_id,
         "selected_choice": answer.selected_choice,

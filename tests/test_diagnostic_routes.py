@@ -154,8 +154,11 @@ def _seed_questions(db: FakeSession, count: int = 20) -> list[DiagnosticQuestion
             difficulty=slot.difficulty,
             points=slot.points,
             order_index=order_index,
+            passage_text=None,
             question_text=f"Question {order_index}",
+            question_url=None,
             question_image=None,
+            question_image_public_id=None,
             choices=_choices(),
             correct_choice="B",
             explanation=f"Explanation {order_index}",
@@ -205,7 +208,12 @@ def test_attempt_questions_omit_answer_key(client: TestClient):
         assert "explanation" not in question
         assert "points" not in question
         assert "question_text" in question
+        assert "passage_text" in question
         assert "choices" in question
+        assert "question_url" not in question
+        assert "question_image_public_id" not in question
+        assert "question_image" in question
+    assert "image_scale" in question
 
 
 def test_submit_answer_computes_is_correct_server_side(client: TestClient):
@@ -234,6 +242,34 @@ def test_submit_answer_computes_is_correct_server_side(client: TestClient):
     assert body["selected_choice"] == "A"
     stored = db.store[DiagnosticAnswer][0]
     assert stored.is_correct is False
+
+
+def test_submit_answer_twice_updates_same_row(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db)
+    attempt = DiagnosticAttempt(
+        student_id=7,
+        started_at=_utcnow(),
+        status="in_progress",
+    )
+    db.add(attempt)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    first = client.post(
+        f"/diagnostic/attempts/{attempt.id}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "A"},
+    )
+    second = client.post(
+        f"/diagnostic/attempts/{attempt.id}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "C"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["selected_choice"] == "C"
+    answers = db.store[DiagnosticAnswer]
+    assert len(answers) == 1
+    assert answers[0].selected_choice == "C"
 
 
 def test_student_cannot_access_another_students_attempt(client: TestClient):
@@ -355,6 +391,128 @@ def test_question_layout_validation_rejects_mismatch(client: TestClient):
     payload = _question_payload(3, difficulty="hard", points=3)
     response = client.post("/diagnostic/questions", json=payload)
     assert response.status_code == 422
+
+
+def test_question_url_is_stored_and_must_be_unique(client: TestClient):
+    db = FakeSession()
+    _override_db(db)
+    _override_user("admin", user_id=1)
+
+    first = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(1, question_url="dadada"),
+    )
+    assert first.status_code == 200
+    assert first.json()["question_url"] == "dadada"
+    assert db.store[DiagnosticQuestion][0].question_url == "dadada"
+
+    duplicate = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(2, question_url="dadada"),
+    )
+    assert duplicate.status_code == 409
+
+
+def test_question_image_is_returned_to_students(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db, count=1)
+    questions[0].question_image = "https://cdn.example.com/figure.png"
+    questions[0].question_image_public_id = "diagnostic/abc"
+    attempt = DiagnosticAttempt(
+        student_id=7,
+        started_at=_utcnow(),
+        status="in_progress",
+    )
+    db.add(attempt)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    response = client.get(f"/diagnostic/attempts/{attempt.id}/questions")
+    assert response.status_code == 200
+    body = response.json()[0]
+    assert body["question_image"] == "https://cdn.example.com/figure.png"
+    assert body["image_scale"] == 0.85
+    assert "question_image_public_id" not in body
+    assert "question_url" not in body
+
+
+def test_image_scale_is_persisted_and_returned_to_students(client: TestClient):
+    db = FakeSession()
+    _override_db(db)
+    _override_user("admin", user_id=1)
+
+    created = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(
+            1,
+            question_image="https://cdn.example.com/figure.png",
+            image_scale=0.6,
+        ),
+    )
+    assert created.status_code == 200
+    assert created.json()["image_scale"] == 0.6
+    assert db.store[DiagnosticQuestion][0].image_scale == 0.6
+
+    too_large = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(2, image_scale=1.4),
+    )
+    assert too_large.status_code == 422
+
+    attempt = DiagnosticAttempt(
+        student_id=7,
+        started_at=_utcnow(),
+        status="in_progress",
+    )
+    db.add(attempt)
+    _override_user("student", user_id=7)
+
+    response = client.get(f"/diagnostic/attempts/{attempt.id}/questions")
+    assert response.status_code == 200
+    body = response.json()[0]
+    assert body["image_scale"] == 0.6
+    assert body["question_image"] == "https://cdn.example.com/figure.png"
+
+
+def test_upload_question_image_returns_url(client: TestClient, monkeypatch):
+    _override_user("admin", user_id=1)
+
+    def fake_upload(file_bytes, **kwargs):
+        assert kwargs["folder"] == "diagnostic_questions"
+        assert kwargs["content_type"] == "image/png"
+        return {
+            "url": "https://res.cloudinary.com/demo/image/upload/q.png",
+            "public_id": "diagnostic_questions/diagnostic_1_abcd",
+            "filename": "figure.png",
+            "content_type": "image/png",
+            "size_bytes": len(file_bytes),
+        }
+
+    monkeypatch.setattr("routes.diagnostic.upload_file", fake_upload)
+    response = client.post(
+        "/diagnostic/questions/image",
+        files={"file": ("figure.png", b"\x89PNG\r\n", "image/png")},
+    )
+    assert response.status_code == 200
+    assert response.json()["url"].startswith("https://")
+    assert response.json()["public_id"]
+
+
+def test_upload_question_image_rejects_pdf(client: TestClient, monkeypatch):
+    _override_user("admin", user_id=1)
+    called = []
+
+    def fake_upload(*args, **kwargs):
+        called.append(True)
+        raise AssertionError("should not upload")
+
+    monkeypatch.setattr("routes.diagnostic.upload_file", fake_upload)
+    response = client.post(
+        "/diagnostic/questions/image",
+        files={"file": ("notes.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+    assert response.status_code == 422
+    assert called == []
 
 
 def test_delete_question_blocked_when_answers_exist(client: TestClient):

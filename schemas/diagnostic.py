@@ -53,8 +53,12 @@ class DiagnosticQuestionCreate(BaseModel):
     difficulty: str
     points: int
     order_index: int
+    passage_text: Optional[str] = None
     question_text: str
+    question_url: Optional[str] = None
     question_image: Optional[str] = None
+    question_image_public_id: Optional[str] = None
+    image_scale: float = Field(default=0.85, ge=0.4, le=1.0)
     choices: list[ChoiceSchema]
     correct_choice: str
     explanation: Optional[str] = None
@@ -80,7 +84,7 @@ class DiagnosticQuestionCreate(BaseModel):
             raise ValueError("correct_choice is required")
         return choice
 
-    @field_validator("question_image", "explanation")
+    @field_validator("question_url", "question_image", "question_image_public_id", "passage_text", "explanation")
     @classmethod
     def strip_optional(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -126,8 +130,12 @@ class DiagnosticQuestionAdminSchema(BaseModel):
     difficulty: str
     points: int
     order_index: int
+    passage_text: Optional[str] = None
     question_text: str
+    question_url: Optional[str] = None
     question_image: Optional[str] = None
+    question_image_public_id: Optional[str] = None
+    image_scale: float = 0.85
     choices: list[ChoiceSchema]
     correct_choice: str
     explanation: Optional[str] = None
@@ -143,8 +151,10 @@ class DiagnosticQuestionPublicSchema(BaseModel):
     domain: str
     difficulty: str
     order_index: int
+    passage_text: Optional[str] = None
     question_text: str
     question_image: Optional[str] = None
+    image_scale: float = 0.85
     choices: list[ChoiceSchema]
 
 

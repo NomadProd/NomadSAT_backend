@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Column, DateTime, Integer, String, ForeignKey, Boolean, Date, Time, Text, UniqueConstraint, Index
+from sqlalchemy import BigInteger, Column, DateTime, Float, Integer, String, ForeignKey, Boolean, Date, Time, Text, UniqueConstraint, Index, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -261,8 +261,12 @@ class DiagnosticQuestion(Base):
     difficulty = Column(String, nullable=False)
     points = Column(Integer, nullable=False)
     order_index = Column(Integer, nullable=False)
+    passage_text = Column(Text, nullable=True)
     question_text = Column(Text, nullable=False)
+    question_url = Column(Text, nullable=True)
     question_image = Column(Text, nullable=True)
+    question_image_public_id = Column(Text, nullable=True)
+    image_scale = Column(Float, nullable=False, default=0.85, server_default="0.85")
     choices = Column(JSONB, nullable=False)
     correct_choice = Column(String, nullable=False)
     explanation = Column(Text, nullable=True)
@@ -274,6 +278,12 @@ class DiagnosticQuestion(Base):
     __table_args__ = (
         UniqueConstraint("order_index", name="uq_diagnostic_questions_order_index"),
         Index("idx_diagnostic_questions_order", "order_index"),
+        Index(
+            "uq_diagnostic_questions_question_url",
+            "question_url",
+            unique=True,
+            postgresql_where=text("question_url IS NOT NULL"),
+        ),
     )
 
 
