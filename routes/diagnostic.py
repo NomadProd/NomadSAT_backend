@@ -20,6 +20,7 @@ from schemas.diagnostic import (
     DiagnosticAnswerSchema,
     DiagnosticAnswerSubmit,
     DiagnosticAttemptCreatedSchema,
+    DiagnosticAttemptProgress,
     DiagnosticAttemptSchema,
     DiagnosticQuestionAdminSchema,
     DiagnosticQuestionCreate,
@@ -110,6 +111,8 @@ def serialize_attempt(
         total_point_estimate=attempt.total_point_estimate,
         total_range_low=attempt.total_range_low,
         total_range_high=attempt.total_range_high,
+        math_started_at=attempt.math_started_at,
+        current_question_id=attempt.current_question_id,
         answers=[
             DiagnosticAnswerSchema(
                 question_id=answer.question_id,
@@ -454,6 +457,45 @@ def submit_diagnostic_answer(
         "question_id": answer.question_id,
         "selected_choice": answer.selected_choice,
         "answered_at": answer.answered_at,
+    }
+
+
+@router.patch("/diagnostic/attempts/{attempt_id}/progress")
+def save_diagnostic_progress(
+    attempt_id: int,
+    data: DiagnosticAttemptProgress,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    attempt = get_attempt_or_404(attempt_id, db)
+    require_attempt_access(attempt, current_user)
+    if attempt.student_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the attempt owner can save progress",
+        )
+    if attempt.status != STATUS_IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail="This diagnostic attempt is no longer in progress",
+        )
+
+    question = (
+        db.query(DiagnosticQuestion)
+        .filter(DiagnosticQuestion.id == data.current_question_id)
+        .first()
+    )
+    if question is None:
+        raise HTTPException(status_code=404, detail="Diagnostic question not found")
+
+    attempt.current_question_id = data.current_question_id
+    if data.math_started_at is not None and attempt.math_started_at is None:
+        attempt.math_started_at = _as_utc(data.math_started_at)
+    db.commit()
+    db.refresh(attempt)
+    return {
+        "current_question_id": attempt.current_question_id,
+        "math_started_at": attempt.math_started_at,
     }
 
 

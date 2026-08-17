@@ -292,6 +292,12 @@ class DiagnosticAttempt(Base):
     total_range_low = Column(Integer, nullable=True)
     total_range_high = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="in_progress", server_default="in_progress")
+    math_started_at = Column(DateTime(timezone=True), nullable=True)
+    current_question_id = Column(
+        BigInteger,
+        ForeignKey("diagnostic_questions.id"),
+        nullable=True,
+    )
 
     student = relationship(
         "User",

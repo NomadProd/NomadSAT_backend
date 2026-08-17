@@ -185,7 +185,14 @@ class DiagnosticAttemptSchema(BaseModel):
     total_point_estimate: Optional[int] = None
     total_range_low: Optional[int] = None
     total_range_high: Optional[int] = None
+    math_started_at: Optional[datetime] = None
+    current_question_id: Optional[int] = None
     answers: list[DiagnosticAnswerSchema] = []
+
+
+class DiagnosticAttemptProgress(BaseModel):
+    current_question_id: int
+    math_started_at: Optional[datetime] = None
 
 
 class DiagnosticAttemptCreatedSchema(BaseModel):

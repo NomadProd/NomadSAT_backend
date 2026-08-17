@@ -380,3 +380,60 @@ def test_delete_question_blocked_when_answers_exist(client: TestClient):
 
     response = client.delete(f"/diagnostic/questions/{questions[0].id}")
     assert response.status_code == 409
+
+
+def test_save_progress_sets_math_start_once_and_updates_question(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db)
+    attempt = DiagnosticAttempt(
+        student_id=7,
+        started_at=_utcnow(),
+        status="in_progress",
+    )
+    db.add(attempt)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    first_start = datetime(2026, 8, 17, 9, 0, tzinfo=timezone.utc)
+    first = client.patch(
+        f"/diagnostic/attempts/{attempt.id}/progress",
+        json={
+            "current_question_id": questions[10].id,
+            "math_started_at": first_start.isoformat(),
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()["current_question_id"] == questions[10].id
+    assert attempt.math_started_at == first_start
+
+    later_start = datetime(2026, 8, 17, 9, 20, tzinfo=timezone.utc)
+    second = client.patch(
+        f"/diagnostic/attempts/{attempt.id}/progress",
+        json={
+            "current_question_id": questions[12].id,
+            "math_started_at": later_start.isoformat(),
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["current_question_id"] == questions[12].id
+    assert attempt.math_started_at == first_start
+    assert attempt.current_question_id == questions[12].id
+
+
+def test_save_progress_rejected_when_not_in_progress(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db, count=1)
+    attempt = DiagnosticAttempt(
+        student_id=7,
+        started_at=_utcnow(),
+        status="completed",
+    )
+    db.add(attempt)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    response = client.patch(
+        f"/diagnostic/attempts/{attempt.id}/progress",
+        json={"current_question_id": questions[0].id},
+    )
+    assert response.status_code == 409
