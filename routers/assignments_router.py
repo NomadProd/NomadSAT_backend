@@ -57,6 +57,137 @@ def ensure_teacher_copy_session_access(
         )
 
 
+def ensure_teacher_bulk_targets_in_class(
+    current_user: User,
+    class_id: int,
+    target_student_ids: list[int],
+    db: Session,
+) -> None:
+    if current_user.role != "teacher":
+        return
+    for student_id in target_student_ids:
+        student = (
+            db.query(User)
+            .filter(User.id == student_id, User.role == "student")
+            .first()
+        )
+        if not student:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only copy assignments to students in your classes",
+            )
+        enrollment = (
+            db.query(ClassEnrollment)
+            .filter(
+                ClassEnrollment.class_id == class_id,
+                ClassEnrollment.student_id == student_id,
+            )
+            .first()
+        )
+        if not enrollment:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only copy assignments to students in your classes",
+            )
+
+
+def resolve_same_session_copy_targets(
+    data: CopyAssignmentData,
+    class_id: int,
+    db: Session,
+    *,
+    source_student_id: int,
+) -> list[int]:
+    if data.all_students:
+        enrollments = (
+            db.query(ClassEnrollment)
+            .filter(ClassEnrollment.class_id == class_id)
+            .all()
+        )
+        target_student_ids = [enrollment.student_id for enrollment in enrollments]
+    elif data.target_student_ids is not None:
+        if not data.target_student_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="Provide at least one target student or set all_students=true",
+            )
+        target_student_ids = list(dict.fromkeys(data.target_student_ids))
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide target_student_ids or set all_students=true",
+        )
+
+    target_student_ids = [
+        student_id
+        for student_id in target_student_ids
+        if student_id != source_student_id
+    ]
+    if not target_student_ids:
+        raise HTTPException(status_code=400, detail="No target students to copy to")
+    return target_student_ids
+
+
+def resolve_cross_session_copy_targets(
+    data: CopyAssignmentData,
+    class_id: int,
+    db: Session,
+) -> list[int]:
+    if data.student_id is not None:
+        target_student_ids = [data.student_id]
+    elif data.target_student_ids is not None:
+        if not data.target_student_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="Provide at least one target student or set all_students=true",
+            )
+        target_student_ids = list(dict.fromkeys(data.target_student_ids))
+    elif data.all_students:
+        enrollments = (
+            db.query(ClassEnrollment)
+            .filter(ClassEnrollment.class_id == class_id)
+            .all()
+        )
+        target_student_ids = [enrollment.student_id for enrollment in enrollments]
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide student_id, target_student_ids, or all_students for cross-session copy",
+        )
+
+    if not target_student_ids:
+        raise HTTPException(status_code=400, detail="No target students to copy to")
+    return target_student_ids
+
+
+def target_student_skip_reason(
+    current_user: User,
+    class_id: int,
+    student_id: int,
+    db: Session,
+) -> str | None:
+    if current_user.role == "teacher":
+        return None
+    student = (
+        db.query(User)
+        .filter(User.id == student_id, User.role == "student")
+        .first()
+    )
+    if not student:
+        return "STUDENT_NOT_FOUND"
+    enrollment = (
+        db.query(ClassEnrollment)
+        .filter(
+            ClassEnrollment.class_id == class_id,
+            ClassEnrollment.student_id == student_id,
+        )
+        .first()
+    )
+    if not enrollment:
+        return "NOT_ENROLLED"
+    return None
+
+
 def used_homework_slots(db: Session, session_id: int, student_id: int) -> set[int]:
     rows = (
         db.query(Assignment.slot_index)
@@ -331,48 +462,31 @@ def copy_assignment(
 
     if target_session_id == source.session_id:
         class_obj = target_class
-
-        if data.all_students or not data.target_student_ids:
-            enrollments = (
-                db.query(ClassEnrollment)
-                .filter(ClassEnrollment.class_id == class_obj.id)
-                .all()
-            )
-            target_student_ids = [enrollment.student_id for enrollment in enrollments]
-        else:
-            target_student_ids = list(dict.fromkeys(data.target_student_ids))
-
-        target_student_ids = [
-            student_id
-            for student_id in target_student_ids
-            if student_id != source.student_id
-        ]
-
-        if not target_student_ids:
-            raise HTTPException(status_code=400, detail="No target students to copy to")
+        target_student_ids = resolve_same_session_copy_targets(
+            data,
+            class_obj.id,
+            db,
+            source_student_id=source.student_id,
+        )
+        ensure_teacher_bulk_targets_in_class(
+            current_user,
+            class_obj.id,
+            target_student_ids,
+            db,
+        )
 
         created: list[dict] = []
         skipped: list[dict] = []
 
         for student_id in target_student_ids:
-            student = db.query(User).filter(
-                User.id == student_id,
-                User.role == "student",
-            ).first()
-            if not student:
-                skipped.append({"student_id": student_id, "reason": "STUDENT_NOT_FOUND"})
-                continue
-
-            enrollment = (
-                db.query(ClassEnrollment)
-                .filter(
-                    ClassEnrollment.class_id == class_obj.id,
-                    ClassEnrollment.student_id == student_id,
-                )
-                .first()
+            skip_reason = target_student_skip_reason(
+                current_user,
+                class_obj.id,
+                student_id,
+                db,
             )
-            if not enrollment:
-                skipped.append({"student_id": student_id, "reason": "NOT_ENROLLED"})
+            if skip_reason is not None:
+                skipped.append({"student_id": student_id, "reason": skip_reason})
                 continue
 
             overwrite: Assignment | None = None
@@ -430,47 +544,29 @@ def copy_assignment(
             detail="due_date and due_time are required when copying to another session",
         )
 
-    if data.student_id is not None:
-        target_student_ids = [data.student_id]
-    elif data.target_student_ids:
-        target_student_ids = list(dict.fromkeys(data.target_student_ids))
-    elif data.all_students:
-        enrollments = (
-            db.query(ClassEnrollment)
-            .filter(ClassEnrollment.class_id == target_class.id)
-            .all()
-        )
-        target_student_ids = [enrollment.student_id for enrollment in enrollments]
-    else:
-        raise HTTPException(
-            status_code=422,
-            detail="Provide student_id, target_student_ids, or all_students for cross-session copy",
-        )
-
-    if not target_student_ids:
-        raise HTTPException(status_code=400, detail="No target students to copy to")
+    target_student_ids = resolve_cross_session_copy_targets(
+        data,
+        target_class.id,
+        db,
+    )
+    ensure_teacher_bulk_targets_in_class(
+        current_user,
+        target_class.id,
+        target_student_ids,
+        db,
+    )
 
     created: list[dict] = []
     skipped: list[dict] = []
     for student_id in target_student_ids:
-        student = db.query(User).filter(
-            User.id == student_id,
-            User.role == "student",
-        ).first()
-        if not student:
-            skipped.append({"student_id": student_id, "reason": "STUDENT_NOT_FOUND"})
-            continue
-
-        enrollment = (
-            db.query(ClassEnrollment)
-            .filter(
-                ClassEnrollment.class_id == target_class.id,
-                ClassEnrollment.student_id == student_id,
-            )
-            .first()
+        skip_reason = target_student_skip_reason(
+            current_user,
+            target_class.id,
+            student_id,
+            db,
         )
-        if not enrollment:
-            skipped.append({"student_id": student_id, "reason": "NOT_ENROLLED"})
+        if skip_reason is not None:
+            skipped.append({"student_id": student_id, "reason": skip_reason})
             continue
 
         overwrite: Assignment | None = None
