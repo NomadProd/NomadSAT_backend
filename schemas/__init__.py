@@ -1,10 +1,27 @@
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 import datetime as dt
+import re
+
+
+def sanitize_email(email: str) -> str:
+    """Remove invisible Unicode characters from email addresses."""
+    # Remove common invisible Unicode characters that cause validation issues
+    # Includes: WORD JOINER (U+2060), ZERO WIDTH SPACE (U+200B),
+    # ZERO WIDTH NON-JOINER (U+200C), ZERO WIDTH JOINER (U+200D),
+    # ZERO WIDTH NO-BREAK SPACE (U+FEFF), and similar
+    invisible_chars = r'[\u200B-\u200D\uFEFF\u2060\u2061\u00AD\u034F]'
+    return re.sub(invisible_chars, '', email).strip()
+
 
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+    @field_validator('email')
+    @classmethod
+    def sanitize_email_field(cls, v: str) -> str:
+        return sanitize_email(v)
 
 class NewUserData(BaseModel):
     email: EmailStr
@@ -13,12 +30,24 @@ class NewUserData(BaseModel):
     surname: str
     role: str
 
+    @field_validator('email')
+    @classmethod
+    def sanitize_email_field(cls, v: str) -> str:
+        return sanitize_email(v)
+
 class UpdateUserData(BaseModel):
     email: Optional[EmailStr] = None
     password: Optional[str] = None
     name: Optional[str] = None
     surname: Optional[str] = None
     role: Optional[str] = None
+
+    @field_validator('email')
+    @classmethod
+    def sanitize_email_field(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return sanitize_email(v)
 
 class WeeklyLessonSlot(BaseModel):
     day_of_week: int  # 0=Monday … 6=Sunday (Python weekday)
