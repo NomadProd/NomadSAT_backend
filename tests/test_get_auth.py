@@ -135,7 +135,11 @@ def test_teacher_classes_query_filters_by_teacher_columns():
 
     assert db.last_query is not None
     assert db.last_query.model is Class
-    assert len(db.last_query.filters) == 1
+    sql = " ".join(str(f) for f in db.last_query.filters)
+    assert "classes.verbal_teacher_id" in sql
+    assert "classes.math_teacher_id" in sql
+    assert "classes.archived" in sql
+    assert "class_enrollment" not in sql
 
 
 def test_student_classes_query_uses_enrollment_subquery():
@@ -146,7 +150,10 @@ def test_student_classes_query_uses_enrollment_subquery():
 
     assert db.last_query is not None
     assert db.last_query.model is Class
-    assert len(db.last_query.filters) == 1
+    sql = " ".join(str(f) for f in db.last_query.filters)
+    assert "class_enrollment.class_id" in sql
+    assert "classes.archived" in sql
+    assert "verbal_teacher_id" not in sql
 
 
 def test_student_cannot_read_other_students_homework_result_returns_404(client: TestClient):

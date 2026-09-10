@@ -1,0 +1,1417 @@
+<title>Practice Test Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+  :root {
+    --ground: #EEF3FF;
+    --surface: #FFFFFF;
+    --surface-2: #F6F9FF;
+    --line: #D4E0FA;
+    --line-soft: #E6EDFC;
+    --ink: #0D1B3E;
+    --ink-mid: #4A5A7A;
+    --ink-soft: #7C8AA8;
+    --accent: #1A4AF0;
+    --accent-soft: #E3EAFF;
+    --verbal: #7B1FA2;
+    --verbal-soft: #F4E8F8;
+    --math: #00796B;
+    --math-soft: #E0F2F0;
+    --good: #16733A;
+    --good-soft: #E4F3E9;
+    --bad: #B3261E;
+    --bad-soft: #FBE9E7;
+    --warn: #9A5000;
+    --warn-soft: #FDF0E0;
+    --shadow: 0 1px 2px rgba(13, 27, 62, .06), 0 8px 24px rgba(13, 27, 62, .06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #080D1C;
+      --surface: #111A31;
+      --surface-2: #0C1428;
+      --line: #253559;
+      --line-soft: #1B2745;
+      --ink: #E8EEFC;
+      --ink-mid: #9DAECE;
+      --ink-soft: #6C7C9C;
+      --accent: #6C8DFF;
+      --accent-soft: #1A2750;
+      --verbal: #D08BE8;
+      --verbal-soft: #2C1A38;
+      --math: #4FD1BE;
+      --math-soft: #10302C;
+      --good: #6DD394;
+      --good-soft: #102C1C;
+      --bad: #FF9A90;
+      --bad-soft: #37160F;
+      --warn: #F0B265;
+      --warn-soft: #33220C;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #080D1C;
+    --surface: #111A31;
+    --surface-2: #0C1428;
+    --line: #253559;
+    --line-soft: #1B2745;
+    --ink: #E8EEFC;
+    --ink-mid: #9DAECE;
+    --ink-soft: #6C7C9C;
+    --accent: #6C8DFF;
+    --accent-soft: #1A2750;
+    --verbal: #D08BE8;
+    --verbal-soft: #2C1A38;
+    --math: #4FD1BE;
+    --math-soft: #10302C;
+    --good: #6DD394;
+    --good-soft: #102C1C;
+    --bad: #FF9A90;
+    --bad-soft: #37160F;
+    --warn: #F0B265;
+    --warn-soft: #33220C;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 40px 72px;
+  }
+
+  /* ---- masthead ---- */
+
+  .masthead { display: flex; flex-direction: column; gap: 14px; margin-bottom: 30px; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  h1 {
+    font-family: "IBM Plex Serif", Georgia, serif;
+    font-size: clamp(28px, 4.4vw, 42px);
+    line-height: 1.12;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-family: "IBM Plex Serif", Georgia, serif;
+    font-size: 16.5px;
+    line-height: 1.62;
+    color: var(--ink-mid);
+    max-width: 66ch;
+    margin: 0;
+  }
+
+  .standfirst em { color: var(--ink); font-style: italic; }
+
+  /* ---- layout ---- */
+
+  .columns {
+    display: grid;
+    grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
+  }
+
+  @media (max-width: 900px) {
+    .columns { grid-template-columns: minmax(0, 1fr); }
+    .state-col { position: static !important; }
+  }
+
+  .state-col { position: sticky; top: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .action-col { display: flex; flex-direction: column; gap: 18px; }
+
+  /* ---- panels ---- */
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--surface-2);
+  }
+
+  .panel-title {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--ink-mid);
+  }
+
+  .panel-body { padding: 15px 16px; display: flex; flex-direction: column; gap: 13px; }
+
+  /* ---- state readout ---- */
+
+  .rows { display: flex; flex-direction: column; gap: 0; }
+
+  .row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px dashed var(--line-soft);
+  }
+
+  .row:last-child { border-bottom: 0; }
+
+  .row dt { color: var(--ink-mid); font-size: 13.5px; margin: 0; }
+
+  .row dd {
+    margin: 0;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--ink);
+  }
+
+  .row.changed dd { color: var(--accent); }
+  .row.changed dt::before {
+    content: "›";
+    color: var(--accent);
+    font-weight: 700;
+    margin-right: 5px;
+  }
+
+  .group-label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 4px 0 2px;
+  }
+
+  /* ---- module meters ---- */
+
+  .meter { display: flex; flex-direction: column; gap: 5px; }
+
+  .meter-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13.5px;
+  }
+
+  .meter-name { font-weight: 600; }
+  .meter-name.verbal { color: var(--verbal); }
+  .meter-name.math { color: var(--math); }
+
+  .meter-count {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-mid);
+  }
+
+  .track { height: 7px; border-radius: 99px; background: var(--line-soft); overflow: hidden; }
+  .fill { height: 100%; border-radius: 99px; background: var(--verbal); transition: width .18s ease; }
+  .fill.math { background: var(--math); }
+  .fill.done { background: var(--good); }
+
+  /* ---- status pills ---- */
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 99px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    border: 1px solid transparent;
+    font-family: "IBM Plex Sans", sans-serif;
+  }
+
+  .pill.draft { background: var(--surface-2); color: var(--ink-soft); border-color: var(--line); }
+  .pill.live { background: var(--good-soft); color: var(--good); border-color: currentColor; }
+  .pill.busy { background: var(--accent-soft); color: var(--accent); border-color: currentColor; }
+  .pill.done { background: var(--accent); color: #fff; }
+
+  /* ---- outcome strip ---- */
+
+  .outcome {
+    display: flex;
+    gap: 11px;
+    align-items: flex-start;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+
+  .outcome.ok { background: var(--good-soft); border-color: color-mix(in srgb, var(--good) 34%, transparent); }
+  .outcome.err { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 34%, transparent); }
+
+  .code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--ink-mid);
+    flex: none;
+    line-height: 1.5;
+  }
+
+  .outcome.ok .code { color: var(--good); }
+  .outcome.err .code { color: var(--bad); }
+  .outcome-text { font-size: 13.5px; line-height: 1.5; }
+  .outcome-text strong { font-weight: 600; }
+
+  /* ---- buttons ---- */
+
+  .btn-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  button {
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 13px;
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease;
+  }
+
+  button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .42; cursor: not-allowed; }
+
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 84%, black); }
+  button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+  button.danger:hover:not(:disabled) { background: var(--bad-soft); border-color: var(--bad); }
+  button.ghost { background: transparent; }
+
+  .actor {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  .actor.teacher { color: var(--verbal); }
+  .actor.student { color: var(--math); }
+
+  .hint { font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; margin: 0; }
+
+  /* ---- tabs ---- */
+
+  .tabs {
+    display: flex;
+    gap: 2px;
+    padding: 6px 6px 0;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--surface-2);
+    overflow-x: auto;
+  }
+
+  .tab {
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+    background: transparent;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--ink-mid);
+    white-space: nowrap;
+  }
+
+  .tab:hover { background: transparent; border-color: transparent; color: var(--ink); }
+
+  .tab[aria-selected="true"] {
+    background: var(--surface);
+    border-color: var(--line-soft);
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .scenario-desc {
+    font-family: "IBM Plex Serif", Georgia, serif;
+    font-size: 14.5px;
+    line-height: 1.62;
+    color: var(--ink-mid);
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .scenario-desc strong { color: var(--ink); font-weight: 600; }
+
+  .steps { display: flex; flex-direction: column; gap: 7px; list-style: none; margin: 0; padding: 0; counter-reset: step; }
+
+  .step { display: flex; align-items: center; gap: 10px; }
+
+  .step-num {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 99px;
+    display: grid;
+    place-items: center;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--ink-soft);
+  }
+
+  .step.current .step-num { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .step.past .step-num { background: var(--good-soft); border-color: var(--good); color: var(--good); }
+  .step.past .step-btn { opacity: .5; }
+  .step-btn { flex: 1; text-align: left; }
+  .step.current .step-btn { border-color: var(--accent); font-weight: 600; }
+
+  /* ---- grid-in checker ---- */
+
+  .checker { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+
+  .field { display: flex; flex-direction: column; gap: 5px; }
+
+  .field label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  input[type="text"] {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 11px;
+    width: 128px;
+  }
+
+  input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .verdict {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--ink-mid);
+  }
+
+  .verdict.ok { background: var(--good-soft); border-color: var(--good); color: var(--good); }
+  .verdict.no { background: var(--bad-soft); border-color: var(--bad); color: var(--bad); }
+
+  .rulebook { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+  .rulebook li { font-size: 13px; color: var(--ink-mid); line-height: 1.5; }
+  .rulebook code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12.5px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--ink);
+  }
+
+  /* ---- score ---- */
+
+  .scoreline { display: flex; flex-wrap: wrap; gap: 10px; }
+
+  .score-tile {
+    flex: 1 1 90px;
+    padding: 11px 13px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .score-tile .k {
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--ink-soft);
+  }
+
+  .score-tile .v {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+  }
+
+  .score-tile.total { background: var(--accent-soft); border-color: var(--accent); }
+  .score-tile.total .v { color: var(--accent); }
+  .score-tile.verbal .v { color: var(--verbal); }
+  .score-tile.math .v { color: var(--math); }
+
+  .footnote {
+    margin: 26px 0 0;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    max-width: 74ch;
+  }
+
+  .footnote code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--ink-mid);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <span class="eyebrow">TuranSAT · throwaway prototype</span>
+    <h1>Practice Test Engine</h1>
+    <p class="standfirst">
+      Every rule the practice-test system enforces, as buttons you can press. The question this
+      answers: <em>does the state model hold up when someone pushes on it?</em> A test runs the
+      official four modules — Reading &amp; Writing 1–2 then Math 1–2, 98 questions — and a
+      half-built one must refuse to publish, a student must get exactly one attempt, a finished
+      module must not reopen, and a grid-in answer must be graded the way College Board actually
+      grades it. Each click returns the same status code the real API returns.
+    </p>
+  </header>
+
+  <div class="columns">
+    <!-- ================= state ================= -->
+    <div class="state-col">
+      <section class="panel">
+        <div class="panel-head">
+          <span class="panel-title">The test · 4 modules</span>
+          <span id="test-status"></span>
+        </div>
+        <div class="panel-body">
+          <dl class="rows" id="test-rows"></dl>
+          <div id="meters" style="display:flex;flex-direction:column;gap:11px"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Aisha's attempt</span>
+          <span id="attempt-status"></span>
+        </div>
+        <div class="panel-body">
+          <dl class="rows" id="attempt-rows"></dl>
+          <div class="scoreline" id="scoreline" hidden></div>
+        </div>
+      </section>
+
+      <div class="outcome" id="outcome">
+        <span class="code" id="outcome-code">—</span>
+        <span class="outcome-text" id="outcome-text">Press a button to begin.</span>
+      </div>
+    </div>
+
+    <!-- ================= actions ================= -->
+    <div class="action-col">
+      <section class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Free play</span>
+          <button class="ghost" id="reset" style="font-size:12.5px;padding:4px 10px">Reset everything</button>
+        </div>
+        <div class="panel-body">
+          <div>
+            <span class="actor teacher">Teacher / mentor / admin</span>
+            <div class="btn-grid" id="teacher-actions"></div>
+          </div>
+          <div>
+            <span class="actor student">Aisha (student, Group A)</span>
+            <div class="btn-grid" id="student-actions"></div>
+          </div>
+          <p class="hint">
+            Every button stays clickable. Pressing one out of order is the point — the model
+            answers with the same refusal the API would send.
+          </p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="tabs" id="tabs" role="tablist"></div>
+        <div class="panel-body">
+          <p class="scenario-desc" id="scenario-desc"></p>
+          <ol class="steps" id="steps"></ol>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Grid-in answer checker</span>
+        </div>
+        <div class="panel-body">
+          <p class="hint">
+            Math questions where the student types a value instead of picking a letter. The correct
+            answer stored on this question is <code style="font-family:'IBM Plex Mono',monospace">2/3</code>.
+            Type what a student would type.
+          </p>
+          <div class="checker">
+            <div class="field">
+              <label for="gridin">Student types</label>
+              <input type="text" id="gridin" value=".6666" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="verdict" id="gridin-verdict">—</div>
+          </div>
+          <div class="btn-grid" id="gridin-samples"></div>
+          <ul class="rulebook">
+            <li>Fractions need not be reduced — <code>2/4</code> is correct for <code>1/2</code>.</li>
+            <li>A repeating decimal must <strong>fill the field</strong>, truncated or rounded at the last
+              character: <code>.6666</code>, <code>.6667</code>, <code>0.666</code> and <code>0.667</code> pass;
+              <code>.666</code> and <code>0.66</code> do not.</li>
+            <li>Five characters, or six with a leading minus sign. No <code>%</code>, <code>$</code>,
+              commas, or mixed numbers.</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <p class="footnote">
+    Throwaway prototype — the page is disposable, the module behind it is not. The rules it runs are
+    ports of <code>services/practice_test_scoring.py</code> and <code>routes/practice_tests.py</code>;
+    the status codes and refusal messages are the ones those endpoints return. Nothing here talks to
+    a server or a database, and no state survives a reload.
+  </p>
+</div>
+
+<script>
+/* ============================================================================
+ * The model. Pure: no DOM, no handlers reaching in. Mirrors the real rules so
+ * it can be checked against routes/practice_tests.py line for line.
+ * ==========================================================================*/
+const PracticeTest = (() => {
+  // The official digital SAT shape: two modules per section, 98 questions.
+  const MODULES = [
+    { id: 10, key: 'rw1',   section: 'rw',   label: 'Reading & Writing 1', order: 1, minutes: 32, required: 27 },
+    { id: 11, key: 'rw2',   section: 'rw',   label: 'Reading & Writing 2', order: 2, minutes: 32, required: 27 },
+    { id: 20, key: 'math1', section: 'math', label: 'Math 1',             order: 3, minutes: 35, required: 22 },
+    { id: 21, key: 'math2', section: 'math', label: 'Math 2',             order: 4, minutes: 35, required: 22 },
+  ];
+
+  const SECTIONS = [
+    { key: 'rw',   label: 'Reading & Writing', maxRaw: 54 },
+    { key: 'math', label: 'Math',              maxRaw: 44 },
+  ];
+
+  const GRID_IN_SLOT = 22; // last Math 2 question is a student-produced response
+
+  // ---- grid-in matching (port of spr_is_correct) --------------------------
+
+  function parseGridIn(raw) {
+    const text = (raw ?? '').trim();
+    if (!text) return null;
+    const negative = text.startsWith('-');
+    const body = negative ? text.slice(1) : text;
+    if (!body || /[^0-9./]/.test(body)) return null;
+
+    let n, d;
+    if (body.includes('/')) {
+      const parts = body.split('/');
+      if (parts.length !== 2 || body.includes('.')) return null;
+      if (!/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) return null;
+      n = Number(parts[0]); d = Number(parts[1]);
+      if (d === 0) return null;
+    } else {
+      if ((body.match(/\./g) || []).length > 1 || body === '.') return null;
+      const [whole, frac = ''] = body.split('.');
+      d = Math.pow(10, frac.length);
+      n = Number((whole || '0') + frac);
+      if (!Number.isFinite(n)) return null;
+    }
+    return { n: negative ? -n : n, d };
+  }
+
+  function decimalPlaces(raw) {
+    const body = raw.trim().replace(/^-/, '');
+    if (body.includes('/') || !body.includes('.')) return 0;
+    return body.split('.')[1].length;
+  }
+
+  function fillsField(raw) {
+    const text = raw.trim();
+    return text.length === (text.startsWith('-') ? 6 : 5);
+  }
+
+  function gridInIsCorrect(response, accepted) {
+    const text = (response ?? '').trim();
+    const limit = text.startsWith('-') ? 6 : 5;
+    if (!text || text.length > limit) return false;
+
+    const value = parseGridIn(text);
+    if (!value) return false;
+    const places = decimalPlaces(text);
+
+    for (const candidate of accepted) {
+      const expected = parseGridIn(candidate);
+      if (!expected) continue;
+      if (value.n * expected.d === expected.n * value.d) return true;
+      if (places > 0 && fillsField(text)) {
+        const diff = Math.abs(value.n * expected.d - expected.n * value.d);
+        if (diff * Math.pow(10, places) < value.d * expected.d) return true;
+      }
+    }
+    return false;
+  }
+
+  // ---- scoring (port of scaled_score / total_score) -----------------------
+
+  function scaledScore(raw, maxRaw, ceiling = 800) {
+    if (maxRaw <= 0) return 200;
+    const clamped = Math.max(0, Math.min(raw, maxRaw));
+    return 200 + Math.round((ceiling - 200) * clamped / maxRaw);
+  }
+
+  // ---- state --------------------------------------------------------------
+
+  function makeQuestion(moduleKey, order) {
+    const gridIn = moduleKey === 'math2' && order === GRID_IN_SLOT;
+    return {
+      id: `${moduleKey}-${order}`,
+      moduleKey, order,
+      type: gridIn ? 'grid_in' : 'mcq',
+      correctChoice: gridIn ? null : 'B',
+      correctAnswers: gridIn ? ['2/3'] : null,
+    };
+  }
+
+  const blankQuestions = () =>
+    Object.fromEntries(MODULES.map(module => [module.key, []]));
+
+  function empty() {
+    return { test: null, questions: blankQuestions(), attempt: null };
+  }
+
+  function seeded() {
+    const state = empty();
+    state.test = { title: 'Practice Test 1', published: false, groups: [] };
+    state.questions.rw1 = Array.from({ length: 27 }, (_, i) => makeQuestion('rw1', i + 1));
+    state.questions.rw2 = Array.from({ length: 12 }, (_, i) => makeQuestion('rw2', i + 1));
+    return state;
+  }
+
+  // ---- derived ------------------------------------------------------------
+
+  const moduleByKey = key => MODULES.find(m => m.key === key);
+
+  function shortModule(state) {
+    for (const module of MODULES) {
+      const have = state.questions[module.key].length;
+      if (have !== module.required) return { module, have };
+    }
+    return null;
+  }
+
+  function currentModule(state) {
+    return state.attempt ? MODULES[state.attempt.moduleIndex] : null;
+  }
+
+  function moduleQuestions(state, moduleKey) {
+    return state.questions[moduleKey];
+  }
+
+  function currentQuestion(state) {
+    const attempt = state.attempt;
+    if (!attempt) return null;
+    const list = moduleQuestions(state, MODULES[attempt.moduleIndex].key);
+    return list[attempt.questionIndex] ?? null;
+  }
+
+  function answeredCount(state) {
+    return state.attempt ? Object.keys(state.attempt.answers).length : 0;
+  }
+
+  // ---- reducer ------------------------------------------------------------
+  // Returns { state, outcome } where outcome mirrors the HTTP response.
+
+  const ok = (message) => ({ code: 200, ok: true, message });
+  const no = (code, message) => ({ code, ok: false, message });
+
+  function reduce(state, action) {
+    const s = structuredClone(state);
+    const a = action;
+
+    switch (a.type) {
+      case 'RESET':
+        return { state: seeded(), outcome: ok('Back to a half-built draft: R&W 1 is done, R&W 2 is part-way, Math has not been started.') };
+
+      case 'CREATE_TEST': {
+        s.test = { title: 'Practice Test 1', published: false, groups: [] };
+        s.questions = blankQuestions();
+        s.attempt = null;
+        return { state: s, outcome: ok('Test created with four empty modules: Reading & Writing 1-2 at 27 questions in 32 minutes, Math 1-2 at 22 in 35.') };
+      }
+
+      case 'ADD_QUESTION': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet. Create one first.') };
+        const target = a.moduleKey ?? shortModule(s)?.module.key;
+        if (!target) return { state: s, outcome: no(422, 'Every module is already full.') };
+        a = { ...a, moduleKey: target };
+        const module = moduleByKey(a.moduleKey);
+        const list = s.questions[a.moduleKey];
+        if (list.length >= module.required) {
+          return { state: s, outcome: no(422, `The ${module.label} module is already full at ${module.required} questions.`) };
+        }
+        list.push(makeQuestion(a.moduleKey, list.length + 1));
+        return { state: s, outcome: ok(`Added ${module.label} question ${list.length} of ${module.required}.`) };
+      }
+
+      case 'FILL_MODULE': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet. Create one first.') };
+        const target = a.moduleKey ?? shortModule(s)?.module.key;
+        if (!target) return { state: s, outcome: no(422, 'Every module is already full.') };
+        a = { ...a, moduleKey: target };
+        const module = moduleByKey(a.moduleKey);
+        const list = s.questions[a.moduleKey];
+        const added = module.required - list.length;
+        if (added <= 0) return { state: s, outcome: no(422, `The ${module.label} module is already full.`) };
+        while (list.length < module.required) list.push(makeQuestion(a.moduleKey, list.length + 1));
+        return { state: s, outcome: ok(`Authored ${added} more ${module.label} question(s). The module is complete.`) };
+      }
+
+      case 'FILL_ALL': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet. Create one first.') };
+        let next = s;
+        while (shortModule(next)) next = reduce(next, { type: 'FILL_MODULE' }).state;
+        return { state: next, outcome: ok('Authored all 98 questions across the four modules.') };
+      }
+
+      case 'REMOVE_QUESTION': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet.') };
+        const lastFilled = [...MODULES].reverse()
+          .find(module => s.questions[module.key].length > 0);
+        const module = moduleByKey(a.moduleKey ?? lastFilled?.key);
+        if (!module) return { state: s, outcome: no(404, 'No questions to delete.') };
+        const list = s.questions[module.key];
+        if (!list.length) return { state: s, outcome: no(404, `No ${module.label} questions to delete.`) };
+        list.pop();
+        // A published test that just lost a question would hand students a short
+        // module, so it drops back to draft until the slot is filled again.
+        if (s.test.published && shortModule(s)) {
+          s.test.published = false;
+          return {
+            state: s,
+            outcome: ok(`Deleted a ${module.label} question. The test dropped back to draft — no student can start a module that is a question short.`),
+          };
+        }
+        return { state: s, outcome: ok(`Deleted the last ${module.label} question. The slot is free again.`) };
+      }
+
+      case 'PUBLISH': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet.') };
+        const short = shortModule(s);
+        if (short) {
+          return {
+            state: s,
+            outcome: no(409, `The ${short.module.label} module has ${short.have} of ${short.module.required} questions.`),
+          };
+        }
+        s.test.published = true;
+        return { state: s, outcome: ok('Published. Every assigned group can now see it.') };
+      }
+
+      case 'HIDE': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet.') };
+        s.test.published = false;
+        return { state: s, outcome: ok('Hidden. Completeness is never checked on the way down.') };
+      }
+
+      case 'ASSIGN_GROUP': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet.') };
+        if (s.test.groups.includes('Group A')) {
+          return { state: s, outcome: no(422, 'Group A already has this test.') };
+        }
+        s.test.groups = ['Group A'];
+        return { state: s, outcome: ok('Group A can see this test — once it is published.') };
+      }
+
+      case 'UNASSIGN_GROUP': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet.') };
+        s.test.groups = [];
+        return { state: s, outcome: ok('Removed from every group.') };
+      }
+
+      case 'START_ATTEMPT': {
+        if (!s.test) return { state: s, outcome: no(404, 'There is no test yet.') };
+        if (!s.test.published || !s.test.groups.includes('Group A')) {
+          return { state: s, outcome: no(403, 'This practice test is not available to you.') };
+        }
+        if (s.attempt) {
+          return { state: s, outcome: no(409, 'You have already taken this practice test.') };
+        }
+        s.attempt = {
+          status: 'in_progress',
+          moduleIndex: 0,
+          questionIndex: 0,
+          phase: 'taking',
+          answers: {},
+          correct: {},
+          scores: null,
+        };
+        return { state: s, outcome: ok('Attempt started. The Reading & Writing timer is running.') };
+      }
+
+      case 'ANSWER': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        if (s.attempt.status !== 'in_progress') {
+          return { state: s, outcome: no(409, 'This practice test attempt is no longer in progress.') };
+        }
+        const question = currentQuestion(s);
+        if (!question) return { state: s, outcome: no(404, 'No question here.') };
+
+        let value, isCorrect;
+        if (question.type === 'grid_in') {
+          value = a.value ?? '2/3';
+          isCorrect = gridInIsCorrect(value, question.correctAnswers);
+        } else {
+          value = a.correct ? question.correctChoice : 'A';
+          isCorrect = value === question.correctChoice;
+        }
+        s.attempt.answers[question.id] = value;
+        s.attempt.correct[question.id] = isCorrect;
+        return {
+          state: s,
+          outcome: ok(`Recorded "${value}" for question ${question.order}. Whether it is right is withheld until the test is submitted.`),
+        };
+      }
+
+      case 'ANSWER_REST': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        if (s.attempt.status !== 'in_progress') {
+          return { state: s, outcome: no(409, 'This practice test attempt is no longer in progress.') };
+        }
+        const module = MODULES[s.attempt.moduleIndex];
+        const list = moduleQuestions(s, module.key);
+        let filled = 0;
+        for (const question of list) {
+          if (s.attempt.answers[question.id] !== undefined) continue;
+          s.attempt.answers[question.id] = question.type === 'grid_in' ? '2/3' : question.correctChoice;
+          s.attempt.correct[question.id] = true;
+          filled += 1;
+        }
+        return { state: s, outcome: ok(`Answered the remaining ${filled} ${module.label} question(s) correctly.`) };
+      }
+
+      case 'NEXT_QUESTION': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        const module = MODULES[s.attempt.moduleIndex];
+        const list = moduleQuestions(s, module.key);
+        if (s.attempt.questionIndex >= list.length - 1) {
+          s.attempt.phase = 'module_review';
+          return { state: s, outcome: ok(`End of the ${module.label} module — the review list opens.`) };
+        }
+        s.attempt.questionIndex += 1;
+        return { state: s, outcome: ok(`Moved to question ${s.attempt.questionIndex + 1} of ${list.length}.`) };
+      }
+
+      case 'FINISH_MODULE': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        if (s.attempt.status !== 'in_progress') {
+          return { state: s, outcome: no(409, 'This practice test attempt is no longer in progress.') };
+        }
+        s.attempt.phase = 'module_review';
+        return { state: s, outcome: ok('The review list opens: every question in this module, answered or not.') };
+      }
+
+      case 'CONTINUE_FROM_REVIEW': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        if (s.attempt.moduleIndex >= MODULES.length - 1) {
+          return reduce(s, { type: 'SUBMIT' });
+        }
+        s.attempt.phase = 'module_break';
+        return { state: s, outcome: ok('Module break. The next module has its own timer, which has not started yet.') };
+      }
+
+      case 'START_NEXT_MODULE': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        if (s.attempt.phase !== 'module_break') {
+          return { state: s, outcome: no(409, 'You are not at a module break.') };
+        }
+        s.attempt.moduleIndex += 1;
+        s.attempt.questionIndex = 0;
+        s.attempt.phase = 'taking';
+        const module = MODULES[s.attempt.moduleIndex];
+        return { state: s, outcome: ok(`${module.label} started. Its ${module.minutes}-minute timer begins now.`) };
+      }
+
+      case 'GO_BACK_A_MODULE': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        if (s.attempt.moduleIndex === 0) {
+          return { state: s, outcome: no(409, 'You are already in the first module.') };
+        }
+        return { state: s, outcome: no(409, 'Modules cannot be revisited once you have moved on.') };
+      }
+
+      case 'SUBMIT': {
+        if (!s.attempt) return { state: s, outcome: no(404, 'No attempt in progress.') };
+        if (s.attempt.status === 'completed') {
+          return { state: s, outcome: no(409, 'This practice test attempt is already completed.') };
+        }
+        // Raw counts are per SECTION, so both of its modules add up.
+        const tally = {};
+        for (const section of SECTIONS) {
+          const list = MODULES
+            .filter(module => module.section === section.key)
+            .flatMap(module => moduleQuestions(s, module.key));
+          const raw = list.filter(q => s.attempt.correct[q.id]).length;
+          tally[section.key] = { raw, max: list.length, scaled: scaledScore(raw, list.length) };
+        }
+        const total = Math.max(400, Math.min(tally.rw.scaled + tally.math.scaled, 1600));
+        s.attempt.status = 'completed';
+        s.attempt.phase = 'review';
+        s.attempt.scores = { ...tally, total };
+        return {
+          state: s,
+          outcome: ok(`Submitted and scored. Unanswered questions counted as incorrect. Total ${total}.`),
+        };
+      }
+
+      default:
+        return { state: s, outcome: no(400, `Unknown action ${a.type}.`) };
+    }
+  }
+
+  return {
+    MODULES, GRID_IN_SLOT,
+    seeded, reduce,
+    gridInIsCorrect, scaledScore,
+    currentModule, currentQuestion, moduleQuestions, answeredCount, shortModule,
+  };
+})();
+
+/* ============================================================================
+ * The page. Throwaway shell over the model above.
+ * ==========================================================================*/
+(() => {
+  const $ = id => document.getElementById(id);
+
+  let state = PracticeTest.seeded();
+  let outcome = { code: null, ok: null, message: 'Press a button to begin. The test starts half-built on purpose.' };
+  let previous = {};
+
+  const TEACHER_ACTIONS = [
+    ['Create a new test',            { type: 'CREATE_TEST' }],
+    ['Author 1 question',            { type: 'ADD_QUESTION' }],
+    ['Fill the next module',         { type: 'FILL_MODULE' }],
+    ['Author all 98 questions',      { type: 'FILL_ALL' }],
+    ['Delete the last question',     { type: 'REMOVE_QUESTION' }, 'danger'],
+    ['Show to Group A',              { type: 'ASSIGN_GROUP' }],
+    ['Remove from Group A',          { type: 'UNASSIGN_GROUP' }, 'danger'],
+    ['Publish',                      { type: 'PUBLISH' }, 'primary'],
+    ['Hide',                         { type: 'HIDE' }],
+  ];
+
+  const STUDENT_ACTIONS = [
+    ['Start the test',             { type: 'START_ATTEMPT' }, 'primary'],
+    ['Answer correctly',           { type: 'ANSWER', correct: true }],
+    ['Answer incorrectly',         { type: 'ANSWER', correct: false }],
+    ['Next question',              { type: 'NEXT_QUESTION' }],
+    ['Answer the rest correctly',  { type: 'ANSWER_REST' }],
+    ['Finish this module',         { type: 'FINISH_MODULE' }],
+    ['Continue from review',       { type: 'CONTINUE_FROM_REVIEW' }],
+    ['Start the next module',      { type: 'START_NEXT_MODULE' }],
+    ['Go back to R&W',             { type: 'GO_BACK_A_MODULE' }, 'danger'],
+    ['Submit the test',            { type: 'SUBMIT' }, 'primary'],
+  ];
+
+  // A complete, published, group-assigned test — the starting point for most
+  // of the student-side scenarios.
+  const published = state => {
+    let s = PracticeTest.reduce(state, { type: 'CREATE_TEST' }).state;
+    s = PracticeTest.reduce(s, { type: 'FILL_ALL' }).state;
+    s = PracticeTest.reduce(s, { type: 'ASSIGN_GROUP' }).state;
+    return PracticeTest.reduce(s, { type: 'PUBLISH' }).state;
+  };
+
+  const SCENARIOS = [
+    {
+      name: 'Build & publish',
+      blurb: 'A teacher builds a test from nothing. Watch the <strong>Publish</strong> button in the middle of the run: a test with a short module is refused with the exact count that is missing, so nobody has to guess what is left to do.',
+      steps: [
+        ['Create a new test',        { type: 'CREATE_TEST' }],
+        ['Fill Reading & Writing 1', { type: 'FILL_MODULE' }],
+        ['Try to publish now',       { type: 'PUBLISH' }],
+        ['Author all 98 questions',  { type: 'FILL_ALL' }],
+        ['Show to Group A',          { type: 'ASSIGN_GROUP' }],
+        ['Publish',                  { type: 'PUBLISH' }],
+      ],
+    },
+    {
+      name: 'A student takes it',
+      blurb: 'The full run: two modules, each with its own timer, a review list between them, and a break before Math starts. Note that answers are recorded but <strong>correctness stays hidden</strong> until the test is submitted.',
+      setup: published,
+      setupNote: 'Set up: a complete 98-question test, published to Group A.',
+      steps: [
+        ['Start the test',             { type: 'START_ATTEMPT' }],
+        ['Answer question 1 wrong',    { type: 'ANSWER', correct: false }],
+        ['Answer the rest of R&W 1',   { type: 'ANSWER_REST' }],
+        ['Finish R&W 1',               { type: 'FINISH_MODULE' }],
+        ['Continue from review',       { type: 'CONTINUE_FROM_REVIEW' }],
+        ['Start R&W 2',                { type: 'START_NEXT_MODULE' }],
+        ['Answer all of R&W 2',        { type: 'ANSWER_REST' }],
+        ['Finish R&W 2',               { type: 'FINISH_MODULE' }],
+        ['Continue from review',       { type: 'CONTINUE_FROM_REVIEW' }],
+        ['Start Math 1',               { type: 'START_NEXT_MODULE' }],
+        ['Answer all of Math 1',       { type: 'ANSWER_REST' }],
+        ['Finish Math 1',              { type: 'FINISH_MODULE' }],
+        ['Continue from review',       { type: 'CONTINUE_FROM_REVIEW' }],
+        ['Start Math 2',               { type: 'START_NEXT_MODULE' }],
+        ['Answer all of Math 2',       { type: 'ANSWER_REST' }],
+        ['Finish Math 2',              { type: 'FINISH_MODULE' }],
+        ['Continue — this submits',    { type: 'CONTINUE_FROM_REVIEW' }],
+      ],
+    },
+    {
+      name: 'One attempt only',
+      blurb: 'A practice test is a mock of the real thing, so a student gets exactly <strong>one attempt</strong>. The rule is a unique index in the database, not a check in route code — there is no path around it.',
+      setup: state => {
+        let s = PracticeTest.reduce(published(state), { type: 'START_ATTEMPT' }).state;
+        s = PracticeTest.reduce(s, { type: 'ANSWER_REST' }).state;
+        return PracticeTest.reduce(s, { type: 'SUBMIT' }).state;
+      },
+      setupNote: 'Set up: Aisha has already taken and submitted this test.',
+      steps: [
+        ['Try to start it again',    { type: 'START_ATTEMPT' }],
+        ['Try to answer anyway',     { type: 'ANSWER', correct: true }],
+        ['Try to submit again',      { type: 'SUBMIT' }],
+      ],
+    },
+    {
+      name: 'No going back',
+      blurb: 'Each module carries its own timer, and moving on restarts it. If a student could step back into a finished module, they would get its timer back too — so a finished module <strong>stays finished</strong>.',
+      setup: state => {
+        let s = PracticeTest.reduce(published(state), { type: 'START_ATTEMPT' }).state;
+        s = PracticeTest.reduce(s, { type: 'ANSWER_REST' }).state;
+        return PracticeTest.reduce(s, { type: 'FINISH_MODULE' }).state;
+      },
+      setupNote: 'Set up: Aisha has finished Reading & Writing 1 and is at its review list.',
+      steps: [
+        ['Continue from review',        { type: 'CONTINUE_FROM_REVIEW' }],
+        ['Start Reading & Writing 2',   { type: 'START_NEXT_MODULE' }],
+        ['Try to go back to R&W 1',     { type: 'GO_BACK_A_MODULE' }],
+      ],
+    },
+    {
+      name: 'A live test goes dark',
+      blurb: 'Deleting a question from a <strong>published</strong> test is allowed — the slot frees up so it can be replaced. But the test must not stay live while a module is a question short, so it drops back to draft on the way out. Refilling the slot does not republish it; that stays the teacher\'s call.',
+      setup: published,
+      setupNote: 'Set up: a complete 98-question test, published to Group A.',
+      steps: [
+        ['Delete the last question',   { type: 'REMOVE_QUESTION' }],
+        ['Aisha tries to start it',    { type: 'START_ATTEMPT' }],
+        ['Try to publish again',       { type: 'PUBLISH' }],
+        ['Author 1 question',          { type: 'ADD_QUESTION' }],
+        ['Publish',                    { type: 'PUBLISH' }],
+      ],
+    },
+  ];
+
+  let activeScenario = 0;
+  let stepCursor = 0;
+
+  // ---- dispatch -----------------------------------------------------------
+
+  function dispatch(action) {
+    previous = snapshot();
+    const result = PracticeTest.reduce(state, action);
+    state = result.state;
+    outcome = result.outcome;
+    render();
+  }
+
+  function snapshot() {
+    const attempt = state.attempt;
+    return {
+      status: state.test ? (state.test.published ? 'Published' : 'Draft') : 'No test',
+      groups: state.test ? (state.test.groups.join(', ') || 'None') : '—',
+      filled: PracticeTest.MODULES.map(m => state.questions[m.key].length).join('-'),
+      attemptStatus: attempt ? attempt.status : 'not started',
+      phase: attempt ? attempt.phase : '—',
+      module: attempt ? PracticeTest.MODULES[attempt.moduleIndex].label : '—',
+      question: attempt ? attempt.questionIndex + 1 : '—',
+      answered: PracticeTest.answeredCount(state),
+      total: attempt && attempt.scores ? attempt.scores.total : '—',
+    };
+  }
+
+  // ---- render -------------------------------------------------------------
+
+  function rowsInto(el, entries, prev) {
+    el.innerHTML = '';
+    for (const [key, label, value] of entries) {
+      const row = document.createElement('div');
+      row.className = 'row' + (prev && prev[key] !== undefined && String(prev[key]) !== String(value) ? ' changed' : '');
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      row.append(dt, dd);
+      el.append(row);
+    }
+  }
+
+  function pill(text, kind) {
+    return `<span class="pill ${kind}">${text}</span>`;
+  }
+
+  function render() {
+    const now = snapshot();
+    const test = state.test;
+    const attempt = state.attempt;
+
+    // test panel
+    $('test-status').innerHTML = !test
+      ? pill('No test', 'draft')
+      : test.published ? pill('Published', 'live') : pill('Draft', 'draft');
+
+    rowsInto($('test-rows'), [
+      ['title',  'Title',            test ? test.title : '—'],
+      ['groups', 'Visible to',       test ? (test.groups.join(', ') || 'No groups') : '—'],
+      ['status', 'Students can see', test && test.published && test.groups.length ? 'Yes' : 'No'],
+    ], previous ? { title: previous.title, groups: previous.groups, status: previous.status } : null);
+
+    const meters = $('meters');
+    meters.innerHTML = '';
+    for (const module of PracticeTest.MODULES) {
+      const have = state.questions[module.key].length;
+      const done = have === module.required;
+      const wrap = document.createElement('div');
+      wrap.className = 'meter';
+      wrap.innerHTML = `
+        <div class="meter-top">
+          <span class="meter-name ${module.section === 'math' ? 'math' : 'verbal'}">${module.label}</span>
+          <span class="meter-count">${have} / ${module.required} · ${module.minutes} min</span>
+        </div>
+        <div class="track"><div class="fill ${module.section === 'math' ? 'math' : ''} ${done ? 'done' : ''}"
+          style="width:${Math.round(100 * have / module.required)}%"></div></div>`;
+      meters.append(wrap);
+    }
+
+    // attempt panel
+    const phaseLabel = {
+      taking: 'Answering questions',
+      module_review: 'Module review list',
+      module_break: 'Module break',
+      review: 'Reading the score report',
+    };
+
+    $('attempt-status').innerHTML = !attempt
+      ? pill('Not started', 'draft')
+      : attempt.status === 'completed' ? pill('Submitted', 'done') : pill('In progress', 'busy');
+
+    const currentModule = attempt ? PracticeTest.MODULES[attempt.moduleIndex] : null;
+    const moduleList = currentModule ? PracticeTest.moduleQuestions(state, currentModule.key) : [];
+    const question = PracticeTest.currentQuestion(state);
+
+    rowsInto($('attempt-rows'), [
+      ['module',   'Module',        currentModule ? `${currentModule.label} (${currentModule.minutes} min)` : '—'],
+      ['phase',    'Where she is',  attempt ? phaseLabel[attempt.phase] : 'Has not started'],
+      ['question', 'Question',      attempt && attempt.phase === 'taking' ? `${attempt.questionIndex + 1} of ${moduleList.length}` : '—'],
+      ['type',     'Question type', question && attempt && attempt.phase === 'taking' ? (question.type === 'grid_in' ? 'Grid-in (typed)' : 'Multiple choice') : '—'],
+      ['answered', 'Answers saved', attempt ? String(PracticeTest.answeredCount(state)) : '—'],
+      ['marks',    'Marks shown',   attempt ? (attempt.status === 'completed' ? 'Yes — after submit' : 'Hidden until submit') : '—'],
+    ], previous ? {
+      module: previous.module, phase: previous.phase, question: previous.question, answered: previous.answered,
+    } : null);
+
+    const scoreline = $('scoreline');
+    if (attempt && attempt.scores) {
+      const s = attempt.scores;
+      scoreline.hidden = false;
+      scoreline.innerHTML = `
+        <div class="score-tile verbal"><span class="k">R&amp;W ${s.rw.raw}/${s.rw.max}</span><span class="v">${s.rw.scaled}</span></div>
+        <div class="score-tile math"><span class="k">Math ${s.math.raw}/${s.math.max}</span><span class="v">${s.math.scaled}</span></div>
+        <div class="score-tile total"><span class="k">Total</span><span class="v">${s.total}</span></div>`;
+    } else {
+      scoreline.hidden = true;
+    }
+
+    // outcome
+    const box = $('outcome');
+    box.className = 'outcome' + (outcome.code === null ? '' : outcome.ok ? ' ok' : ' err');
+    $('outcome-code').textContent = outcome.code === null ? '—' : outcome.code;
+    $('outcome-text').textContent = outcome.message;
+
+    previous = now;
+    renderSteps();
+  }
+
+  // ---- free play ----------------------------------------------------------
+
+  function buildActions(el, list) {
+    el.innerHTML = '';
+    for (const [label, action, kind] of list) {
+      const button = document.createElement('button');
+      button.textContent = label;
+      if (kind) button.className = kind;
+      button.addEventListener('click', () => dispatch(action));
+      el.append(button);
+    }
+  }
+
+  // ---- scenarios ----------------------------------------------------------
+
+  function selectScenario(index) {
+    activeScenario = index;
+    stepCursor = 0;
+    const scenario = SCENARIOS[index];
+    previous = snapshot();
+    const blank = { test: null, questions: { rw: [], math: [] }, attempt: null };
+    state = scenario.setup ? scenario.setup(blank) : blank;
+    outcome = {
+      code: null, ok: null,
+      message: scenario.setupNote ?? 'Fresh start — no test exists yet. Work down the numbered steps.',
+    };
+    renderTabs();
+    render();
+  }
+
+  function renderTabs() {
+    const tabs = $('tabs');
+    tabs.innerHTML = '';
+    SCENARIOS.forEach((scenario, index) => {
+      const tab = document.createElement('button');
+      tab.className = 'tab';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(index === activeScenario));
+      tab.textContent = scenario.name;
+      tab.addEventListener('click', () => selectScenario(index));
+      tabs.append(tab);
+    });
+    $('scenario-desc').innerHTML = SCENARIOS[activeScenario].blurb;
+  }
+
+  function renderSteps() {
+    const list = $('steps');
+    const scenario = SCENARIOS[activeScenario];
+    list.innerHTML = '';
+    scenario.steps.forEach(([label, action], index) => {
+      const item = document.createElement('li');
+      item.className = 'step' + (index === stepCursor ? ' current' : index < stepCursor ? ' past' : '');
+      const num = document.createElement('span');
+      num.className = 'step-num';
+      num.textContent = String(index + 1);
+      const button = document.createElement('button');
+      button.className = 'step-btn';
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        stepCursor = index + 1;
+        dispatch(action);
+      });
+      item.append(num, button);
+      list.append(item);
+    });
+  }
+
+  // ---- grid-in checker ----------------------------------------------------
+
+  const SAMPLES = ['2/3', '.6666', '0.667', '.666', '0.66', '4/6', '3 1/2', '50%'];
+
+  function renderGridIn() {
+    const raw = $('gridin').value;
+    const verdict = $('gridin-verdict');
+    const passes = PracticeTest.gridInIsCorrect(raw, ['2/3']);
+    if (!raw.trim()) {
+      verdict.className = 'verdict';
+      verdict.textContent = '—';
+      return;
+    }
+    verdict.className = 'verdict ' + (passes ? 'ok' : 'no');
+    verdict.textContent = passes ? 'Accepted' : 'Not accepted';
+  }
+
+  function buildSamples() {
+    const el = $('gridin-samples');
+    el.innerHTML = '';
+    for (const sample of SAMPLES) {
+      const button = document.createElement('button');
+      button.textContent = sample;
+      button.style.fontFamily = "'IBM Plex Mono', monospace";
+      button.addEventListener('click', () => {
+        $('gridin').value = sample;
+        renderGridIn();
+      });
+      el.append(button);
+    }
+  }
+
+  // ---- boot ---------------------------------------------------------------
+
+  buildActions($('teacher-actions'), TEACHER_ACTIONS);
+  buildActions($('student-actions'), STUDENT_ACTIONS);
+  buildSamples();
+  $('gridin').addEventListener('input', renderGridIn);
+  $('reset').addEventListener('click', () => {
+    stepCursor = 0;
+    dispatch({ type: 'RESET' });
+  });
+
+  renderTabs();
+  renderGridIn();
+  render();
+})();
+</script>

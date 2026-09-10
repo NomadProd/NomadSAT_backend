@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import mimetypes
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -46,6 +45,10 @@ from dependencies.filters import (
     diagnostic_attempts_query,
     teacher_owns_class,
 )
+from services.attachments import (
+    MAX_QUESTION_IMAGE_BYTES,
+    question_image_content_type,
+)
 from services.cloudinary_service import delete_file, upload_file
 from services.diagnostic_config import (
     QUESTION_COUNT,
@@ -61,24 +64,6 @@ from services.diagnostic_scoring import estimate_result
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["diagnostic"])
-
-MAX_QUESTION_IMAGE_BYTES = 10 * 1024 * 1024
-ALLOWED_QUESTION_IMAGE_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/webp",
-    "image/heic",
-}
-QUESTION_IMAGE_EXTENSIONS = {
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "png": "image/png",
-    "gif": "image/gif",
-    "webp": "image/webp",
-    "heic": "image/heic",
-}
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -549,26 +534,13 @@ def _question_url_taken(
     return True
 
 
-def _question_image_content_type(filename: str, reported: str | None) -> str | None:
-    normalized = (reported or "").split(";", 1)[0].strip().lower()
-    if normalized in ALLOWED_QUESTION_IMAGE_TYPES:
-        return normalized
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext in QUESTION_IMAGE_EXTENSIONS:
-        return QUESTION_IMAGE_EXTENSIONS[ext]
-    guessed, _ = mimetypes.guess_type(filename)
-    if guessed and guessed in ALLOWED_QUESTION_IMAGE_TYPES:
-        return guessed
-    return None
-
-
 @router.post("/diagnostic/questions/image")
 async def upload_diagnostic_question_image(
     file: UploadFile = File(...),
     current_user: AuthUser = Depends(require_admin_or_mentor),
 ):
     filename = file.filename or "question.png"
-    content_type = _question_image_content_type(filename, file.content_type)
+    content_type = question_image_content_type(filename, file.content_type)
     if content_type is None:
         raise HTTPException(
             status_code=422,

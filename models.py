@@ -45,6 +45,11 @@ class User(Base):
         back_populates="student",
         foreign_keys="DiagnosticAttempt.student_id",
     )
+    practice_test_attempts = relationship(
+        "PracticeTestAttempt",
+        back_populates="student",
+        foreign_keys="PracticeTestAttempt.student_id",
+    )
 
 
 class Class(Base):
@@ -358,4 +363,214 @@ class DiagnosticAnswer(Base):
             name="uq_diagnostic_answers_attempt_question",
         ),
         Index("idx_diagnostic_answers_attempt_id", "attempt_id"),
+    )
+
+
+class PracticeTest(Base):
+    __tablename__ = "practice_tests"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    visible = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_by_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    modules = relationship(
+        "PracticeTestModule",
+        back_populates="test",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="PracticeTestModule.order_index",
+    )
+    class_links = relationship(
+        "PracticeTestClass",
+        back_populates="test",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    attempts = relationship(
+        "PracticeTestAttempt",
+        back_populates="test",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class PracticeTestModule(Base):
+    __tablename__ = "practice_test_modules"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    test_id = Column(
+        BigInteger,
+        ForeignKey("practice_tests.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    section = Column(String, nullable=False)
+    order_index = Column(Integer, nullable=False)
+    time_limit_seconds = Column(Integer, nullable=False)
+    required_question_count = Column(Integer, nullable=False)
+
+    test = relationship("PracticeTest", back_populates="modules")
+    questions = relationship(
+        "PracticeTestQuestion",
+        back_populates="module",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="PracticeTestQuestion.order_index",
+    )
+
+    __table_args__ = (
+        Index("uq_practice_test_modules_order", "test_id", "order_index", unique=True),
+        Index("idx_practice_test_modules_test_id", "test_id"),
+    )
+
+
+class PracticeTestQuestion(Base):
+    __tablename__ = "practice_test_questions"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    module_id = Column(
+        BigInteger,
+        ForeignKey("practice_test_modules.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    order_index = Column(Integer, nullable=False)
+    domain = Column(String, nullable=False)
+    difficulty = Column(String, nullable=False)
+    passage_text = Column(Text, nullable=True)
+    question_text = Column(Text, nullable=False)
+    explanation = Column(Text, nullable=True)
+    question_image = Column(Text, nullable=True)
+    question_image_public_id = Column(Text, nullable=True)
+    image_scale = Column(Float, nullable=False, default=0.85, server_default="0.85")
+    answer_type = Column(String, nullable=False)
+    choices = Column(JSONB, nullable=True)
+    correct_choice = Column(String, nullable=True)
+    correct_answers = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_by_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    module = relationship("PracticeTestModule", back_populates="questions")
+    answers = relationship("PracticeTestAnswer", back_populates="question")
+
+    __table_args__ = (
+        Index(
+            "uq_practice_test_questions_order",
+            "module_id",
+            "order_index",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("idx_practice_test_questions_module_id", "module_id"),
+    )
+
+
+class PracticeTestClass(Base):
+    __tablename__ = "practice_test_classes"
+
+    test_id = Column(
+        BigInteger,
+        ForeignKey("practice_tests.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    class_id = Column(
+        Integer,
+        ForeignKey("classes.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    test = relationship("PracticeTest", back_populates="class_links")
+    class_obj = relationship("Class")
+
+
+class PracticeTestAttempt(Base):
+    __tablename__ = "practice_test_attempts"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    test_id = Column(
+        BigInteger,
+        ForeignKey("practice_tests.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    student_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
+    status = Column(String, nullable=False, default="in_progress", server_default="in_progress")
+    started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    current_module_id = Column(
+        BigInteger,
+        ForeignKey("practice_test_modules.id"),
+        nullable=True,
+    )
+    current_question_id = Column(
+        BigInteger,
+        ForeignKey("practice_test_questions.id"),
+        nullable=True,
+    )
+    module_started_at = Column(DateTime(timezone=True), nullable=True)
+    timer_paused_at = Column(DateTime(timezone=True), nullable=True)
+    timer_pause_seconds = Column(Integer, nullable=False, default=0, server_default="0")
+    question_ids = Column(JSONB, nullable=True)
+    rw_raw = Column(Integer, nullable=True)
+    math_raw = Column(Integer, nullable=True)
+    rw_scaled = Column(Integer, nullable=True)
+    math_scaled = Column(Integer, nullable=True)
+    total_scaled = Column(Integer, nullable=True)
+
+    test = relationship("PracticeTest", back_populates="attempts")
+    student = relationship(
+        "User",
+        back_populates="practice_test_attempts",
+        foreign_keys=[student_id],
+    )
+    answers = relationship(
+        "PracticeTestAnswer",
+        back_populates="attempt",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_practice_test_attempts_test_student",
+            "test_id",
+            "student_id",
+            unique=True,
+        ),
+        Index("idx_practice_test_attempts_student_id", "student_id"),
+    )
+
+
+class PracticeTestAnswer(Base):
+    __tablename__ = "practice_test_answers"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    attempt_id = Column(
+        BigInteger,
+        ForeignKey("practice_test_attempts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    question_id = Column(
+        BigInteger,
+        ForeignKey("practice_test_questions.id"),
+        nullable=False,
+    )
+    selected_choice = Column(String, nullable=True)
+    response_text = Column(Text, nullable=True)
+    is_correct = Column(Boolean, nullable=True)
+    answered_at = Column(DateTime(timezone=True), nullable=True)
+
+    attempt = relationship("PracticeTestAttempt", back_populates="answers")
+    question = relationship("PracticeTestQuestion", back_populates="answers")
+
+    __table_args__ = (
+        Index(
+            "uq_practice_test_answers_attempt_question",
+            "attempt_id",
+            "question_id",
+            unique=True,
+        ),
+        Index("idx_practice_test_answers_attempt_id", "attempt_id"),
     )

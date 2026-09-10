@@ -17,6 +17,7 @@ from models import (
     User,
 )
 from services.diagnostic_config import QUESTION_LAYOUT
+from tests.fake_session import FakeSession as _BaseFakeSession
 from services.diagnostic_scoring import estimate_result
 
 
@@ -24,116 +25,18 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class _FakeQuery:
-    def __init__(self, session: "FakeSession", model, rows):
-        self.session = session
-        self.model = model
-        self.rows = list(rows)
-
-    def filter(self, *clauses):
-        rows = self.rows
-        for clause in clauses:
-            rows = [row for row in rows if self.session.matches(row, clause)]
-        return _FakeQuery(self.session, self.model, rows)
-
-    def order_by(self, *args, **kwargs):
-        return self
-
-    def first(self):
-        return self.rows[0] if self.rows else None
-
-    def all(self):
-        return list(self.rows)
-
-    def count(self):
-        return len(self.rows)
-
-
-class FakeSession:
+class FakeSession(_BaseFakeSession):
     def __init__(self):
-        self.store = {
-            DiagnosticQuestion: [],
-            DiagnosticAttempt: [],
-            DiagnosticAnswer: [],
-            User: [],
-            Class: [],
-            ClassEnrollment: [],
-        }
-        self.counters = {
-            DiagnosticQuestion: 1,
-            DiagnosticAttempt: 1,
-            DiagnosticAnswer: 1,
-            User: 1,
-            Class: 1,
-            ClassEnrollment: 1,
-        }
-        self.committed = False
-
-    def query(self, model):
-        return _FakeQuery(self, model, self.store.get(model, []))
-
-    def add(self, obj):
-        model = type(obj)
-        current_id = getattr(obj, "id", None)
-        if current_id is None and model in self.counters:
-            obj.id = self.counters[model]
-            self.counters[model] += 1
-        elif isinstance(current_id, int) and model in self.counters:
-            self.counters[model] = max(self.counters[model], current_id + 1)
-        bucket = self.store.setdefault(model, [])
-        if obj not in bucket:
-            bucket.append(obj)
-
-    def delete(self, obj):
-        bucket = self.store.get(type(obj), [])
-        if obj in bucket:
-            bucket.remove(obj)
-
-    def commit(self):
-        self.committed = True
-
-    def refresh(self, obj):
-        return None
-
-    def rollback(self):
-        return None
-
-    def matches(self, row, clause) -> bool:
-        clauses = getattr(clause, "clauses", None)
-        operator = getattr(clause, "operator", None)
-        if clauses is not None and operator is not None:
-            parts = [self.matches(row, child) for child in clauses]
-            op_name = getattr(operator, "__name__", str(operator))
-            if op_name in ("or_", "or"):
-                return any(parts)
-            return all(parts)
-
-        left = getattr(clause, "left", None)
-        right = getattr(clause, "right", None)
-        key = getattr(left, "key", None)
-        if key is None:
-            return False
-        actual = getattr(row, key, None)
-        expected = right.value if hasattr(right, "value") else right
-        op_name = getattr(operator, "__name__", "")
-        if operator is not None and (
-            op_name in ("in_op", "in_") or getattr(operator, "__name__", "") == "in_op"
-        ):
-            values = expected
-            if isinstance(values, (list, tuple, set)):
-                return actual in values
-            return False
-        if op_name in ("is_", "is"):
-            name = type(expected).__name__ if expected is not None else "NoneType"
-            if expected is None or name == "Null":
-                return actual is None
-            if name == "True_":
-                return actual is True
-            if name == "False_":
-                return actual is False
-            expected_value = expected.value if hasattr(expected, "value") else expected
-            return actual is expected_value
-        return actual == expected
+        super().__init__(
+            models=(
+                DiagnosticQuestion,
+                DiagnosticAttempt,
+                DiagnosticAnswer,
+                User,
+                Class,
+                ClassEnrollment,
+            )
+        )
 
 
 @pytest.fixture

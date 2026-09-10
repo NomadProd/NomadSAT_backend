@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime, timezone
 from typing import Any
 
@@ -267,3 +268,38 @@ def attachment_dicts_to_api(items: list[dict]) -> list[dict]:
             }
         )
     return payload
+
+
+MAX_QUESTION_IMAGE_BYTES = 10 * 1024 * 1024
+ALLOWED_QUESTION_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/heic",
+}
+QUESTION_IMAGE_EXTENSIONS = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic",
+}
+
+
+def question_image_content_type(filename: str, reported: str | None) -> str | None:
+    """Resolve an uploaded question image to an allowed content type, or None.
+
+    Shared by the diagnostic and practice-test question banks.
+    """
+    normalized = (reported or "").split(";", 1)[0].strip().lower()
+    if normalized in ALLOWED_QUESTION_IMAGE_TYPES:
+        return normalized
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext in QUESTION_IMAGE_EXTENSIONS:
+        return QUESTION_IMAGE_EXTENSIONS[ext]
+    guessed, _ = mimetypes.guess_type(filename)
+    if guessed and guessed in ALLOWED_QUESTION_IMAGE_TYPES:
+        return guessed
+    return None
