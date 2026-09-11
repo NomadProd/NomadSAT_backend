@@ -446,9 +446,12 @@ class PracticeTestQuestion(Base):
     question_image_public_id = Column(Text, nullable=True)
     image_scale = Column(Float, nullable=False, default=0.85, server_default="0.85")
     answer_type = Column(String, nullable=False)
-    choices = Column(JSONB, nullable=True)
+    # none_as_null: ck_practice_test_questions_answer_shape tests IS NULL on the
+    # unused column (choices for spr, correct_answers for mcq). The JSONB default
+    # would write JSON 'null', which is NOT NULL, and the insert would be rejected.
+    choices = Column(JSONB(none_as_null=True), nullable=True)
     correct_choice = Column(String, nullable=True)
-    correct_answers = Column(JSONB, nullable=True)
+    correct_answers = Column(JSONB(none_as_null=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_by_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)

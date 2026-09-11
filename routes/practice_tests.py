@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session
 
 from dependencies.auth import (
@@ -327,6 +328,35 @@ def _validate_against_module(
         )
 
 
+def _commit_question(db: Session) -> None:
+    """Commit an authored question, reporting a rejected row as bad input.
+
+    A violated constraint means the payload was the wrong shape, so it is a 4xx,
+    not the bare 500 the raw DatabaseError would become. Branch on the SQLSTATE
+    class rather than the exception class: pg8000 maps only 23505 to
+    IntegrityError, so a check violation (23514) arrives as ProgrammingError.
+    Anything that is not an integrity error is a real fault and re-raises.
+    """
+    try:
+        db.commit()
+    except DatabaseError as exc:
+        db.rollback()
+        info = (getattr(exc.orig, "args", None) or [None])[0]
+        if not isinstance(info, dict):
+            raise
+        code = str(info.get("C") or "")
+        if not code.startswith("23"):
+            raise
+        name = info.get("n") or "a database constraint"
+        # 23505 is a duplicate, which the order_index pre-check already reports
+        # as 409; reaching here means it lost a race with a concurrent write.
+        status_code = 409 if code == "23505" else 422
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"The database rejected this question ({name})",
+        ) from exc
+
+
 def _apply_question_payload(
     question: PracticeTestQuestion,
     data: PracticeTestQuestionCreate,
@@ -421,7 +451,7 @@ def create_practice_question(
     question.created_at = _utcnow()
     question.created_by_id = current_user.id
     db.add(question)
-    db.commit()
+    _commit_question(db)
     db.refresh(question)
     return serialize_question_admin(question)
 
@@ -463,7 +493,7 @@ def update_practice_question(
 
     old_public_id = question.question_image_public_id
     _apply_question_payload(question, data)
-    db.commit()
+    _commit_question(db)
     db.refresh(question)
     if old_public_id and old_public_id != question.question_image_public_id:
         delete_file(old_public_id, "image/jpeg")
