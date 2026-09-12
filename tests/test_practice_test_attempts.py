@@ -558,3 +558,142 @@ def test_a_teacher_outside_the_class_sees_no_attempts(client: TestClient):
 
     _as("teacher", user_id=8)
     assert client.get(f"/practice-tests/{test.id}/attempts").json() == []
+
+
+# --- reading an attempt in progress (resume) --------------------------------
+
+
+def test_the_owner_can_read_their_in_progress_attempt_with_its_answers(
+    client: TestClient,
+):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    client.post(
+        f"/practice-tests/attempts/{attempt_id}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "B"},
+    )
+
+    response = client.get(f"/practice-tests/attempts/{attempt_id}")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "in_progress"
+    answers = {item["question_id"]: item for item in body["answers"]}
+    assert questions[0].id in answers, "the saved answer must come back for resume"
+    assert answers[questions[0].id]["selected_choice"] == "B"
+
+
+def test_an_in_progress_attempt_hides_correctness(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    for question in questions[:2]:
+        client.post(
+            f"/practice-tests/attempts/{attempt_id}/answers",
+            json={"question_id": question.id, "selected_choice": "B"},
+        )
+
+    body = client.get(f"/practice-tests/attempts/{attempt_id}").json()
+
+    assert body["answers"], "expected the answers to be returned"
+    assert all(item["is_correct"] is None for item in body["answers"]), (
+        "correctness must stay hidden until the attempt is completed"
+    )
+
+
+def test_another_student_cannot_read_the_attempt(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+
+    _as("student", user_id=STUDENT_ID + 1)
+    response = client.get(f"/practice-tests/attempts/{attempt_id}")
+
+    assert response.status_code == 403, response.text
+
+
+def test_a_completed_attempt_shows_correctness(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    client.post(
+        f"/practice-tests/attempts/{attempt_id}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "B"},
+    )
+    client.post(f"/practice-tests/attempts/{attempt_id}/complete")
+
+    body = client.get(f"/practice-tests/attempts/{attempt_id}").json()
+
+    assert body["status"] == "completed"
+    graded = {item["question_id"]: item["is_correct"] for item in body["answers"]}
+    assert graded[questions[0].id] is True, (
+        "once submitted the student may see which answers were right"
+    )
+
+
+def test_the_students_teacher_can_read_the_attempt(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+
+    _as("teacher", user_id=7)
+    response = client.get(f"/practice-tests/attempts/{attempt_id}")
+
+    assert response.status_code == 200, response.text
+
+
+def test_an_unrelated_teacher_cannot_read_the_attempt(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+
+    _as("teacher", user_id=404)
+    response = client.get(f"/practice-tests/attempts/{attempt_id}")
+
+    assert response.status_code == 403, response.text
+
+
+def test_admin_can_read_any_attempt(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+
+    _as("admin", user_id=1)
+    assert client.get(f"/practice-tests/attempts/{attempt_id}").status_code == 200
+
+
+def test_reading_a_missing_attempt_is_a_404(client: TestClient):
+    db = FakeSession()
+    _build(db)
+    _use(db)
+    _as("student")
+
+    assert client.get("/practice-tests/attempts/424242").status_code == 404
+
+
+def test_attempts_me_is_not_parsed_as_an_attempt_id(client: TestClient):
+    """The literal path /attempts/me must not be swallowed by /attempts/{id}."""
+    db = FakeSession()
+    _build(db)
+    _use(db)
+    _as("student")
+
+    response = client.get("/practice-tests/attempts/me")
+
+    assert response.status_code == 200, response.text
+    assert isinstance(response.json(), list)

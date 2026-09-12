@@ -898,6 +898,29 @@ def list_my_practice_attempts(
     ]
 
 
+@router.get("/practice-tests/attempts/{attempt_id}")
+def get_practice_attempt(
+    attempt_id: int,
+    db: Session = Depends(get_db),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """The attempt plus its saved answers, so a student can resume where they left off.
+
+    Declared after /practice-tests/attempts/me so "me" is not parsed as an id.
+    Correctness is withheld until the attempt is completed, exactly as the answer
+    endpoint does.
+    """
+    attempt = _get_attempt_or_404(db, attempt_id)
+    _require_review_access(db, attempt, current_user)
+    titles = _titles_for(db, [attempt.test_id])
+    return _serialize_attempt(
+        attempt,
+        test_title=titles.get(attempt.test_id),
+        answers=_answers_for(db, attempt_id),
+        include_correctness=attempt.status == STATUS_COMPLETED,
+    ).model_dump(mode="json")
+
+
 @router.get("/practice-tests/attempts/{attempt_id}/questions")
 def get_practice_attempt_questions(
     attempt_id: int,
