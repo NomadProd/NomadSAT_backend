@@ -1166,18 +1166,21 @@ def create_practice_attempt(
             status_code=403, detail="This practice test is not available to you"
         )
 
-    existing = (
+    # Retakes are allowed, and every attempt is kept: what is not allowed is
+    # two attempts running at once, which would split a student's answers.
+    unfinished = (
         db.query(PracticeTestAttempt)
         .filter(
             PracticeTestAttempt.test_id == test_id,
             PracticeTestAttempt.student_id == current_user.id,
+            PracticeTestAttempt.status == STATUS_IN_PROGRESS,
         )
         .first()
     )
-    if existing is not None:
+    if unfinished is not None:
         raise HTTPException(
             status_code=409,
-            detail="You have already taken this practice test",
+            detail="You already have an attempt in progress at this test",
         )
 
     questions = _ordered_test_questions(db, test_id)
@@ -1232,6 +1235,14 @@ def list_practice_attempts_for_test(
             for attempt in attempts
             if _teacher_can_view_student(db, current_user, attempt.student_id)
         ]
+
+    # One row per student now that retakes exist: their best attempt counts.
+    best: dict[int, PracticeTestAttempt] = {}
+    for attempt in attempts:
+        current = best.get(attempt.student_id)
+        if current is None or (attempt.total_scaled or 0) > (current.total_scaled or 0):
+            best[attempt.student_id] = attempt
+    attempts = list(best.values())
 
     students = {}
     if attempts:

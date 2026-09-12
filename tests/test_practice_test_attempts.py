@@ -148,7 +148,8 @@ def test_starting_an_attempt_freezes_the_question_order(client: TestClient):
     assert attempt.question_ids == [q.id for q in questions]
 
 
-def test_a_second_attempt_at_the_same_test_conflicts(client: TestClient):
+def test_a_second_attempt_while_one_is_in_progress_conflicts(client: TestClient):
+    """Retakes are allowed; two attempts running at once are not."""
     db = FakeSession()
     test, _m, _q = _build(db)
     _use(db)
@@ -158,7 +159,7 @@ def test_a_second_attempt_at_the_same_test_conflicts(client: TestClient):
     second = client.post(f"/practice-tests/{test.id}/attempts")
 
     assert second.status_code == 409
-    assert "already taken" in second.json()["detail"]
+    assert "in progress" in second.json()["detail"].lower()
 
 
 def test_hidden_test_cannot_be_started(client: TestClient):
@@ -697,3 +698,64 @@ def test_attempts_me_is_not_parsed_as_an_attempt_id(client: TestClient):
 
     assert response.status_code == 200, response.text
     assert isinstance(response.json(), list)
+
+
+# --- retakes ----------------------------------------------------------------
+
+
+def test_a_finished_test_can_be_retaken(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    first = _start(client, test.id)
+    client.post(f"/practice-tests/attempts/{first}/complete")
+
+    response = client.post(f"/practice-tests/{test.id}/attempts")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["attempt_id"] != first
+
+
+def test_a_retake_keeps_the_earlier_attempt(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    first = _start(client, test.id)
+    client.post(
+        f"/practice-tests/attempts/{first}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "B"},
+    )
+    client.post(f"/practice-tests/attempts/{first}/complete")
+    second = client.post(f"/practice-tests/{test.id}/attempts").json()["attempt_id"]
+
+    mine = client.get("/practice-tests/attempts/me").json()
+
+    ids = {item["id"] for item in mine}
+    assert {first, second} <= ids, "the earlier score must stay in the history"
+    earlier = next(item for item in mine if item["id"] == first)
+    assert earlier["status"] == "completed"
+    assert earlier["total_scaled"] is not None
+
+
+def test_staff_see_one_row_per_student_with_their_best(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    first = _start(client, test.id)
+    client.post(f"/practice-tests/attempts/{first}/complete")
+    second = client.post(f"/practice-tests/{test.id}/attempts").json()["attempt_id"]
+    for question in questions:
+        client.post(
+            f"/practice-tests/attempts/{second}/answers",
+            json={"question_id": question.id, "selected_choice": "B"},
+        )
+    client.post(f"/practice-tests/attempts/{second}/complete")
+
+    _as("admin", user_id=1)
+    rows = client.get(f"/practice-tests/{test.id}/attempts").json()
+
+    assert len(rows) == 1, "a retake must not add a second row for the same student"
+    assert rows[0]["id"] == second, "the better attempt is the one that counts"

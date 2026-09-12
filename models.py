@@ -536,11 +536,11 @@ class PracticeTestAttempt(Base):
     )
 
     __table_args__ = (
+        # Not unique: a student may retake a test, and every attempt is kept.
         Index(
-            "uq_practice_test_attempts_test_student",
+            "idx_practice_test_attempts_test_student",
             "test_id",
             "student_id",
-            unique=True,
         ),
         Index("idx_practice_test_attempts_student_id", "student_id"),
     )
