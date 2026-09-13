@@ -13,19 +13,29 @@ SCORE_MIN = 200
 SCORE_MAX = 800
 TOTAL_MIN = 400
 TOTAL_MAX = 1600
+# Scores are reported in steps of 10, as on the SAT.
+SCORE_STEP = 10
 
 # The grid-in field holds 5 characters, or 6 including a leading minus sign.
 FIELD_LEN_POSITIVE = 5
 FIELD_LEN_NEGATIVE = 6
 
 def scaled_score(raw: int, max_raw: int, ceiling: int = SCORE_MAX) -> int:
-    """Section raw correct count -> scaled section score."""
-    # ponytail: linear 200..ceiling. Upgrade path is a per-test conversion table
-    # (raw -> scaled lookup, one per module-2 variant once adaptive lands).
+    """Section raw correct count -> scaled section score.
+
+    Reported on the real SAT scale: 200..800 in steps of 10, never a value
+    in between. No section size in MODULE_FORMAT lands a rounding tie, so
+    round()'s banker's tie-break is never reached.
+    """
+    # ponytail: linear 200..ceiling, snapped to 10. Upgrade path is a per-test
+    # conversion table (raw -> scaled lookup, one per module-2 variant once
+    # adaptive lands); the step of 10 stays either way.
     if max_raw <= 0:
         return SCORE_MIN
     raw = max(0, min(raw, max_raw))
-    return SCORE_MIN + round((ceiling - SCORE_MIN) * raw / max_raw)
+    return SCORE_MIN + SCORE_STEP * round(
+        (ceiling - SCORE_MIN) * raw / max_raw / SCORE_STEP
+    )
 
 
 def total_score(rw_scaled: int, math_scaled: int) -> int:

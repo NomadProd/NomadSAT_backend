@@ -31,6 +31,21 @@ def test_scaled_score_honours_a_lower_ceiling():
     assert scaled_score(0, 27, ceiling=600) == 200
 
 
+def test_every_score_is_a_multiple_of_ten():
+    # The SAT reports 200..800 in steps of 10, and so do we -- at both real
+    # section sizes (54 Reading & Writing, 44 Math) and for the total.
+    for max_raw in (54, 44):
+        for raw in range(max_raw + 1):
+            assert scaled_score(raw, max_raw) % 10 == 0
+    assert total_score(scaled_score(29, 54), scaled_score(36, 44)) % 10 == 0
+
+
+def test_scaled_score_midpoints():
+    assert scaled_score(27, 54) == 500
+    assert scaled_score(29, 54) == 520   # was 522 before scores snapped to 10
+    assert scaled_score(36, 44) == 690
+
+
 def test_total_score_is_clamped():
     assert total_score(800, 800) == 1600
     assert total_score(200, 200) == 400
