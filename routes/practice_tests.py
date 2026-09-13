@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy.exc import DatabaseError
+from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session
 
 from dependencies.auth import (
@@ -868,6 +868,67 @@ def _titles_for(db: Session, test_ids: list[int]) -> dict[int, str]:
     return {row.id: row.title for row in rows}
 
 
+def _apply_practice_answer(
+    answer: PracticeTestAnswer,
+    data: PracticeTestAnswerSubmit,
+    *,
+    is_correct: bool,
+    answered_at: datetime,
+) -> None:
+    answer.selected_choice = data.selected_choice
+    answer.response_text = data.response_text
+    answer.is_correct = is_correct
+    answer.answered_at = answered_at
+
+
+def _upsert_practice_answer(
+    db: Session,
+    *,
+    attempt_id: int,
+    data: PracticeTestAnswerSubmit,
+    is_correct: bool,
+    answered_at: datetime,
+) -> PracticeTestAnswer:
+    """Write the answer, surviving a concurrent write to the same question.
+
+    A grid-in sends a request per keystroke, so two can land together: both find
+    no row, both insert, and uq_practice_test_answers_attempt_question rejects
+    the loser. Rather than 500 -- which the client swallows, losing the answer --
+    take the row the winner inserted and apply our values to it. Same shape as
+    _upsert_diagnostic_answer in routes/diagnostic.py.
+    """
+
+    def lookup() -> PracticeTestAnswer | None:
+        return (
+            db.query(PracticeTestAnswer)
+            .filter(
+                PracticeTestAnswer.attempt_id == attempt_id,
+                PracticeTestAnswer.question_id == data.question_id,
+            )
+            .first()
+        )
+
+    answer = lookup()
+    if answer is None:
+        answer = PracticeTestAnswer(
+            attempt_id=attempt_id, question_id=data.question_id
+        )
+        db.add(answer)
+    _apply_practice_answer(answer, data, is_correct=is_correct, answered_at=answered_at)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        answer = lookup()
+        if answer is None:
+            raise
+        _apply_practice_answer(
+            answer, data, is_correct=is_correct, answered_at=answered_at
+        )
+        db.commit()
+    return answer
+
+
 def _grade(question: PracticeTestQuestion, data: PracticeTestAnswerSubmit) -> bool:
     if question.answer_type == ANSWER_TYPE_MCQ:
         expected = (question.correct_choice or "").strip().upper()
@@ -962,23 +1023,13 @@ def submit_practice_answer(
             status_code=422, detail="This question expects a typed answer"
         )
 
-    answer = (
-        db.query(PracticeTestAnswer)
-        .filter(
-            PracticeTestAnswer.attempt_id == attempt_id,
-            PracticeTestAnswer.question_id == data.question_id,
-        )
-        .first()
+    answer = _upsert_practice_answer(
+        db,
+        attempt_id=attempt_id,
+        data=data,
+        is_correct=_grade(question, data),
+        answered_at=_utcnow(),
     )
-    if answer is None:
-        answer = PracticeTestAnswer(attempt_id=attempt_id, question_id=data.question_id)
-        db.add(answer)
-
-    answer.selected_choice = data.selected_choice
-    answer.response_text = data.response_text
-    answer.is_correct = _grade(question, data)
-    answer.answered_at = _utcnow()
-    db.commit()
 
     # Correctness is deliberately withheld until the attempt is completed.
     return {

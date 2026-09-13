@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from fastapi.testclient import TestClient
 
 from dependencies.auth import AuthUser, get_current_user
@@ -759,3 +760,76 @@ def test_staff_see_one_row_per_student_with_their_best(client: TestClient):
 
     assert len(rows) == 1, "a retake must not add a second row for the same student"
     assert rows[0]["id"] == second, "the better attempt is the one that counts"
+
+
+# --- concurrent answers -----------------------------------------------------
+
+
+class _RacingSession(FakeSession):
+    """Loses one race: the first answer commit fails the way Postgres would.
+
+    Mirrors two requests for the same question arriving together -- both find no
+    row, both insert, and the unique index rejects the loser.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.raised = False
+        self.rolled_back = False
+
+    def commit(self):
+        pending = [
+            row
+            for row in self.store.get(PracticeTestAnswer, [])
+            if row.answered_at is not None
+        ]
+        if pending and not self.raised:
+            self.raised = True
+            # The request that won the race already stored its row.
+            loser = pending[-1]
+            self.store[PracticeTestAnswer].remove(loser)
+            winner = PracticeTestAnswer(
+                attempt_id=loser.attempt_id,
+                question_id=loser.question_id,
+            )
+            winner.selected_choice = "A"
+            winner.is_correct = False
+            winner.answered_at = _utcnow_for_tests()
+            super().add(winner)
+            raise IntegrityError("duplicate key", None, Exception("23505"))
+        return super().commit()
+
+    def rollback(self):
+        self.rolled_back = True
+        return super().rollback()
+
+
+def _utcnow_for_tests():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+def test_two_answers_to_the_same_question_at_once_do_not_500(client: TestClient):
+    db = _RacingSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+
+    response = client.post(
+        f"/practice-tests/attempts/{attempt_id}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "B"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert db.raised and db.rolled_back, "the race must actually have been hit"
+    rows = [
+        row
+        for row in db.store[PracticeTestAnswer]
+        if row.question_id == questions[0].id
+    ]
+    assert len(rows) == 1, "a race must not leave two rows for one question"
+    assert rows[0].selected_choice == "B", (
+        "the answer the student actually gave must survive the race"
+    )
