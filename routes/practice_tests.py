@@ -72,6 +72,12 @@ from services.practice_test_config import (
     name_modules,
     section_allows_grid_in,
 )
+from services.practice_test_clock import (
+    ANSWER_GRACE_SECONDS,
+    away_seconds,
+    is_expired,
+    remaining_seconds,
+)
 from services.practice_test_scoring import scaled_score, spr_is_correct, total_score
 
 router = APIRouter(tags=["practice-tests"])
@@ -79,12 +85,6 @@ router = APIRouter(tags=["practice-tests"])
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 # --- lookups ---------------------------------------------------------------
@@ -718,6 +718,53 @@ def _require_in_progress(attempt: PracticeTestAttempt) -> None:
         )
 
 
+# --- the module clock -------------------------------------------------------
+#
+# The server decides how much time is left; the browser only displays it. The
+# taking screen reports in every few seconds, and a silence longer than the
+# grace is the student having gone -- which is what stops their clock.
+
+
+def _touch(attempt: PracticeTestAttempt, now: datetime) -> None:
+    """Record that the student is here, banking any absence since last time."""
+    gone = away_seconds(
+        last_seen_at=getattr(attempt, "last_seen_at", None), now=now
+    )
+    if gone:
+        attempt.timer_pause_seconds = (
+            int(getattr(attempt, "timer_pause_seconds", 0) or 0) + gone
+        )
+    attempt.last_seen_at = now
+
+
+def _module_of(db: Session, attempt: PracticeTestAttempt, module_id: int | None):
+    if module_id is None:
+        return None
+    return next(
+        (
+            module
+            for module in _modules_for(db, [attempt.test_id]).get(attempt.test_id, [])
+            if module.id == module_id
+        ),
+        None,
+    )
+
+
+def _seconds_remaining(
+    db: Session, attempt: PracticeTestAttempt, now: datetime | None = None
+) -> int | None:
+    """What the clock says for the module the student is in."""
+    module = _module_of(db, attempt, attempt.current_module_id)
+    if module is None:
+        return None
+    return remaining_seconds(
+        module_started_at=attempt.module_started_at,
+        time_limit_seconds=module.time_limit_seconds,
+        pause_seconds=int(getattr(attempt, "timer_pause_seconds", 0) or 0),
+        now=now or _utcnow(),
+    )
+
+
 def _teacher_can_view_student(db: Session, user: AuthUser, student_id: int) -> bool:
     enrollments = (
         db.query(ClassEnrollment)
@@ -828,7 +875,14 @@ def _serialize_attempt(
     test_title: str | None = None,
     answers: list[PracticeTestAnswer] | None = None,
     include_correctness: bool = False,
+    seconds_remaining: int | None = None,
 ) -> PracticeTestAttemptSchema:
+    """The attempt as the client sees it.
+
+    `seconds_remaining` is passed in rather than worked out here: the clock
+    needs the module's time limit, which needs the db, and this stays a plain
+    row-to-schema mapping.
+    """
     return PracticeTestAttemptSchema(
         id=attempt.id,
         test_id=attempt.test_id,
@@ -840,8 +894,8 @@ def _serialize_attempt(
         current_module_id=attempt.current_module_id,
         current_question_id=attempt.current_question_id,
         module_started_at=attempt.module_started_at,
-        timer_paused_at=getattr(attempt, "timer_paused_at", None),
         timer_pause_seconds=int(getattr(attempt, "timer_pause_seconds", 0) or 0),
+        seconds_remaining=seconds_remaining,
         rw_raw=attempt.rw_raw,
         math_raw=attempt.math_raw,
         rw_scaled=attempt.rw_scaled,
@@ -950,10 +1004,14 @@ def list_my_practice_attempts(
         .all()
     )
     attempts.sort(key=lambda a: a.id, reverse=True)
+    for attempt in attempts:
+        _autocomplete_if_expired(db, attempt)
     titles = _titles_for(db, [attempt.test_id for attempt in attempts])
     return [
         _serialize_attempt(
-            attempt, test_title=titles.get(attempt.test_id)
+            attempt,
+            test_title=titles.get(attempt.test_id),
+            seconds_remaining=_seconds_remaining(db, attempt),
         ).model_dump(mode="json")
         for attempt in attempts
     ]
@@ -973,12 +1031,16 @@ def get_practice_attempt(
     """
     attempt = _get_attempt_or_404(db, attempt_id)
     _require_review_access(db, attempt, current_user)
+    # Resuming a test whose last module ran out while the student was away must
+    # land on their score, not drop them back into a module that is over.
+    _autocomplete_if_expired(db, attempt)
     titles = _titles_for(db, [attempt.test_id])
     return _serialize_attempt(
         attempt,
         test_title=titles.get(attempt.test_id),
         answers=_answers_for(db, attempt_id),
         include_correctness=attempt.status == STATUS_COMPLETED,
+        seconds_remaining=_seconds_remaining(db, attempt),
     ).model_dump(mode="json")
 
 
@@ -1009,10 +1071,39 @@ def submit_practice_answer(
     _require_owner(attempt, current_user, "submit answers")
     _require_in_progress(attempt)
 
+    now = _utcnow()
+    # Before the deadline check, not after: an answer arriving on the heels of
+    # a real outage must be judged against a clock that has absorbed it.
+    _touch(attempt, now)
+
     frozen = {question.id: question for question in _questions_for_attempt(db, attempt)}
     question = frozen.get(data.question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Practice test question not found")
+
+    current = _module_of(db, attempt, attempt.current_module_id)
+    answered = _module_of(db, attempt, question.module_id)
+    if current is not None and answered is not None:
+        # Only backwards is refused, matching the rule the progress endpoint
+        # already enforces. A question from a module *ahead* of the server is
+        # the client having advanced after a failed save -- the student's work,
+        # not a cheat, and refusing it would silently void the rest of the test.
+        if answered.order_index < current.order_index:
+            raise HTTPException(
+                status_code=409,
+                detail="Modules cannot be revisited once you have moved on",
+            )
+        if answered.order_index == current.order_index and is_expired(
+            module_started_at=attempt.module_started_at,
+            time_limit_seconds=current.time_limit_seconds,
+            pause_seconds=int(getattr(attempt, "timer_pause_seconds", 0) or 0),
+            now=now,
+            grace=ANSWER_GRACE_SECONDS,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Time is up for this module, so that answer was not saved",
+            )
 
     if question.answer_type == ANSWER_TYPE_MCQ and data.response_text is not None:
         raise HTTPException(
@@ -1051,6 +1142,11 @@ def save_practice_progress(
     _require_owner(attempt, current_user, "save progress")
     _require_in_progress(attempt)
 
+    # An empty body is the taking screen's heartbeat: it says only that the
+    # student is still here, which is the whole of what keeps their clock running.
+    now = _utcnow()
+    _touch(attempt, now)
+
     modules = {m.id: m for m in _modules_for(db, [attempt.test_id]).get(attempt.test_id, [])}
 
     if data.current_module_id is not None and data.current_module_id != attempt.current_module_id:
@@ -1064,8 +1160,8 @@ def save_practice_progress(
                 detail="Modules cannot be revisited once you have moved on",
             )
         attempt.current_module_id = target.id
-        attempt.module_started_at = _utcnow()
-        attempt.timer_paused_at = None
+        # A new module is a fresh clock: time away from the last one is spent.
+        attempt.module_started_at = now
         attempt.timer_pause_seconds = 0
 
     if data.current_question_id is not None:
@@ -1076,27 +1172,100 @@ def save_practice_progress(
             )
         attempt.current_question_id = data.current_question_id
 
-    if data.pause_timer is True:
-        if getattr(attempt, "timer_paused_at", None) is None:
-            attempt.timer_paused_at = _utcnow()
-    elif data.pause_timer is False:
-        paused_at = getattr(attempt, "timer_paused_at", None)
-        if paused_at is not None:
-            extra = int((_utcnow() - _as_utc(paused_at)).total_seconds())
-            attempt.timer_pause_seconds = int(
-                getattr(attempt, "timer_pause_seconds", 0) or 0
-            ) + max(0, extra)
-            attempt.timer_paused_at = None
-
     db.commit()
     db.refresh(attempt)
-    return {
-        "current_module_id": attempt.current_module_id,
-        "current_question_id": attempt.current_question_id,
-        "module_started_at": attempt.module_started_at,
-        "timer_paused_at": attempt.timer_paused_at,
-        "timer_pause_seconds": int(getattr(attempt, "timer_pause_seconds", 0) or 0),
+
+    # The heartbeat doubles as the clock sync, so the answer carries the whole
+    # attempt -- one request, and seconds_remaining defined in exactly one place.
+    _autocomplete_if_expired(db, attempt)
+    titles = _titles_for(db, [attempt.test_id])
+    return _serialize_attempt(
+        attempt,
+        test_title=titles.get(attempt.test_id),
+        seconds_remaining=_seconds_remaining(db, attempt, now),
+    ).model_dump(mode="json")
+
+
+def _score_attempt(db: Session, attempt: PracticeTestAttempt) -> dict:
+    """Raw and scaled section scores for an attempt. Reads only, never writes.
+
+    Lives here rather than in services/ because it needs the db to reach the
+    attempt's questions, sections and answers, and services/ is DB-free.
+    """
+    questions = _questions_for_attempt(db, attempt)
+    sections = _sections_by_module(db, attempt.test_id)
+    correct = {
+        answer.question_id: bool(answer.is_correct)
+        for answer in _answers_for(db, attempt.id)
     }
+
+    totals = {SECTION_READING_WRITING: [0, 0], SECTION_MATH: [0, 0]}
+    for question in questions:
+        section = sections.get(question.module_id)
+        if section not in totals:
+            continue
+        totals[section][1] += 1
+        if correct.get(question.id):
+            totals[section][0] += 1
+
+    rw_raw, rw_max = totals[SECTION_READING_WRITING]
+    math_raw, math_max = totals[SECTION_MATH]
+    rw_scaled = scaled_score(rw_raw, rw_max)
+    math_scaled = scaled_score(math_raw, math_max)
+    return {
+        "rw_raw": rw_raw,
+        "math_raw": math_raw,
+        "rw_scaled": rw_scaled,
+        "math_scaled": math_scaled,
+        "total_scaled": total_score(rw_scaled, math_scaled),
+    }
+
+
+def _score_and_complete(db: Session, attempt: PracticeTestAttempt) -> bool:
+    """Score an in-progress attempt and mark it completed.
+
+    The status is part of the WHERE, not just the SET, so two readers racing to
+    finish the same expired attempt cannot both score it: the loser matches no
+    rows. Returns whether this caller was the one that finished it.
+    """
+    scores = _score_attempt(db, attempt)
+    updated = (
+        db.query(PracticeTestAttempt)
+        .filter(
+            PracticeTestAttempt.id == attempt.id,
+            PracticeTestAttempt.status == STATUS_IN_PROGRESS,
+        )
+        .update(
+            {**scores, "status": STATUS_COMPLETED, "completed_at": _utcnow()},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    db.refresh(attempt)
+    return bool(updated)
+
+
+def _autocomplete_if_expired(db: Session, attempt: PracticeTestAttempt) -> None:
+    """Finish an attempt whose LAST module has run out.
+
+    A student who closes the tab on the final module is done, whether or not
+    they ever press submit; without this their attempt sits in progress forever
+    and their teacher never sees a score. Only the last module counts -- an
+    expired earlier module just means they have a module left to move on to.
+    """
+    if attempt.status != STATUS_IN_PROGRESS:
+        return
+    modules = _modules_for(db, [attempt.test_id]).get(attempt.test_id, [])
+    if not modules or attempt.current_module_id != modules[-1].id:
+        return
+    if not is_expired(
+        module_started_at=attempt.module_started_at,
+        time_limit_seconds=modules[-1].time_limit_seconds,
+        pause_seconds=int(getattr(attempt, "timer_pause_seconds", 0) or 0),
+        now=_utcnow(),
+    ):
+        return
+    _score_and_complete(db, attempt)
 
 
 @router.post("/practice-tests/attempts/{attempt_id}/complete")
@@ -1113,35 +1282,7 @@ def complete_practice_attempt(
         )
     _require_in_progress(attempt)
 
-    questions = _questions_for_attempt(db, attempt)
-    sections = _sections_by_module(db, attempt.test_id)
-    correct = {
-        answer.question_id: bool(answer.is_correct)
-        for answer in _answers_for(db, attempt_id)
-    }
-
-    totals = {SECTION_READING_WRITING: [0, 0], SECTION_MATH: [0, 0]}
-    for question in questions:
-        section = sections.get(question.module_id)
-        if section not in totals:
-            continue
-        totals[section][1] += 1
-        if correct.get(question.id):
-            totals[section][0] += 1
-
-    rw_raw, rw_max = totals[SECTION_READING_WRITING]
-    math_raw, math_max = totals[SECTION_MATH]
-
-    attempt.rw_raw = rw_raw
-    attempt.math_raw = math_raw
-    attempt.rw_scaled = scaled_score(rw_raw, rw_max)
-    attempt.math_scaled = scaled_score(math_raw, math_max)
-    attempt.total_scaled = total_score(attempt.rw_scaled, attempt.math_scaled)
-    attempt.status = STATUS_COMPLETED
-    attempt.completed_at = _utcnow()
-    attempt.timer_paused_at = None
-    db.commit()
-    db.refresh(attempt)
+    _score_and_complete(db, attempt)
 
     titles = _titles_for(db, [attempt.test_id])
     return _serialize_attempt(
@@ -1149,6 +1290,7 @@ def complete_practice_attempt(
         test_title=titles.get(attempt.test_id),
         answers=_answers_for(db, attempt_id),
         include_correctness=True,
+        seconds_remaining=0,
     ).model_dump(mode="json")
 
 
@@ -1229,6 +1371,10 @@ def create_practice_attempt(
         .first()
     )
     if unfinished is not None:
+        # If that attempt's time is already gone, finish it rather than holding
+        # the student in a 409 they have no way to clear.
+        _autocomplete_if_expired(db, unfinished)
+    if unfinished is not None and unfinished.status == STATUS_IN_PROGRESS:
         raise HTTPException(
             status_code=409,
             detail="You already have an attempt in progress at this test",
@@ -1249,6 +1395,7 @@ def create_practice_attempt(
         current_module_id=modules[0].id if modules else None,
         current_question_id=questions[0].id,
         module_started_at=_utcnow(),
+        last_seen_at=_utcnow(),
         timer_pause_seconds=0,
         question_ids=[question.id for question in questions],
     )
@@ -1272,14 +1419,17 @@ def list_practice_attempts_for_test(
     current_user: AuthUser = Depends(require_staff),
 ):
     _get_test_or_404(db, test_id)
+    # Deliberately not filtered to completed in the query: an attempt whose
+    # student never came back has to be seen before it can be finished, and
+    # this staff table is where a stranded one would otherwise hide forever.
     attempts = (
         db.query(PracticeTestAttempt)
-        .filter(
-            PracticeTestAttempt.test_id == test_id,
-            PracticeTestAttempt.status == STATUS_COMPLETED,
-        )
+        .filter(PracticeTestAttempt.test_id == test_id)
         .all()
     )
+    for attempt in attempts:
+        _autocomplete_if_expired(db, attempt)
+    attempts = [a for a in attempts if a.status == STATUS_COMPLETED]
     if not is_admin_or_mentor(current_user.role):
         attempts = [
             attempt

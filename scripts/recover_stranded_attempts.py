@@ -20,46 +20,15 @@ import sys
 
 from database import SessionLocal
 from models import PracticeTestAttempt
-from routes.practice_tests import (
-    _answers_for,
-    _questions_for_attempt,
-    _sections_by_module,
-)
-from services.practice_test_config import (
-    SECTION_MATH,
-    SECTION_READING_WRITING,
-    STATUS_COMPLETED,
-    STATUS_IN_PROGRESS,
-)
-from services.practice_test_scoring import scaled_score, total_score
+from routes.practice_tests import _answers_for, _score_attempt
+from services.practice_test_config import STATUS_COMPLETED, STATUS_IN_PROGRESS
 
 
 def score(db, attempt: PracticeTestAttempt) -> dict:
-    """Mirror of complete_practice_attempt's scoring, minus the HTTP layer."""
-    questions = _questions_for_attempt(db, attempt)
-    sections = _sections_by_module(db, attempt.test_id)
+    """The route's own scoring, plus what this script reports on top of it."""
     answers = _answers_for(db, attempt.id)
-    correct = {answer.question_id: bool(answer.is_correct) for answer in answers}
-
-    totals = {SECTION_READING_WRITING: [0, 0], SECTION_MATH: [0, 0]}
-    for question in questions:
-        section = sections.get(question.module_id)
-        if section not in totals:
-            continue
-        totals[section][1] += 1
-        if correct.get(question.id):
-            totals[section][0] += 1
-
-    rw_raw, rw_max = totals[SECTION_READING_WRITING]
-    math_raw, math_max = totals[SECTION_MATH]
-    rw_scaled = scaled_score(rw_raw, rw_max)
-    math_scaled = scaled_score(math_raw, math_max)
     return {
-        "rw_raw": rw_raw,
-        "math_raw": math_raw,
-        "rw_scaled": rw_scaled,
-        "math_scaled": math_scaled,
-        "total_scaled": total_score(rw_scaled, math_scaled),
+        **_score_attempt(db, attempt),
         # The honest timestamp: when they last worked, not when we ran this.
         "completed_at": max(
             (a.answered_at for a in answers if a.answered_at), default=None

@@ -253,9 +253,14 @@ class PracticeTestAnswerSubmit(BaseModel):
 
 
 class PracticeTestProgressUpdate(BaseModel):
+    """Where the student is now.
+
+    Every field is optional: an empty body is the taking screen's heartbeat,
+    saying only that the student is still here.
+    """
+
     current_question_id: Optional[int] = None
     current_module_id: Optional[int] = None
-    pause_timer: Optional[bool] = None
 
 
 class PracticeTestQuestionPublicSchema(BaseModel):
@@ -297,8 +302,10 @@ class PracticeTestAttemptSchema(BaseModel):
     current_module_id: Optional[int] = None
     current_question_id: Optional[int] = None
     module_started_at: Optional[datetime] = None
-    timer_paused_at: Optional[datetime] = None
     timer_pause_seconds: int = 0
+    # What the module clock says, decided by the server. The browser counts
+    # down from this between syncs; it never works the time out for itself.
+    seconds_remaining: Optional[int] = None
     rw_raw: Optional[int] = None
     math_raw: Optional[int] = None
     rw_scaled: Optional[int] = None

@@ -35,6 +35,19 @@ class _FakeQuery:
     def count(self):
         return len(self.rows)
 
+    def update(self, values, synchronize_session=False):
+        """Set columns on every matched row, returning how many matched.
+
+        The routes use this for writes that must not race -- the filter carries
+        the state the write depends on -- so the count matters as much as the
+        change: zero means somebody else got there first.
+        """
+        for row in self.rows:
+            for column, value in values.items():
+                name = getattr(column, "key", column)
+                setattr(row, name, value)
+        return len(self.rows)
+
 
 class FakeSession:
     def __init__(self, models=()):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 from fastapi.testclient import TestClient
@@ -18,6 +20,7 @@ from models import (
     PracticeTestQuestion,
     User,
 )
+from services.practice_test_clock import ANSWER_GRACE_SECONDS, AWAY_GRACE_SECONDS
 from services.practice_test_config import MODULE_FORMAT, name_modules
 from tests.fake_session import FakeSession as _BaseFakeSession
 
@@ -307,6 +310,150 @@ def test_a_question_outside_the_attempt_is_not_answerable(client: TestClient):
     ).status_code == 404
 
 
+# --- the module clock -------------------------------------------------------
+
+
+def _answer(client: TestClient, attempt_id: int, question_id: int):
+    return client.post(
+        f"/practice-tests/attempts/{attempt_id}/answers",
+        json={"question_id": question_id, "selected_choice": "B"},
+    )
+
+
+def test_an_answer_after_the_module_is_over_is_refused(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.module_started_at = _utcnow_for_tests() - timedelta(
+        seconds=modules[0].time_limit_seconds + ANSWER_GRACE_SECONDS + 60
+    )
+
+    refused = _answer(client, attempt_id, questions[0].id)
+
+    assert refused.status_code == 409
+    assert "Time is up" in refused.json()["detail"]
+    # Refused means refused: nothing may reach the answer table.
+    assert db.store[PracticeTestAnswer] == []
+
+
+def test_an_answer_still_in_flight_at_the_deadline_is_kept(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.module_started_at = _utcnow_for_tests() - timedelta(
+        seconds=modules[0].time_limit_seconds + ANSWER_GRACE_SECONDS - 5
+    )
+
+    assert _answer(client, attempt_id, questions[0].id).status_code == 200
+    assert len(db.store[PracticeTestAnswer]) == 1
+
+
+def test_time_spent_away_is_not_charged_against_the_deadline(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.module_started_at = _utcnow_for_tests() - timedelta(
+        seconds=modules[0].time_limit_seconds + 600
+    )
+    attempt.timer_pause_seconds = 900  # fifteen minutes of it spent away
+
+    assert _answer(client, attempt_id, questions[0].id).status_code == 200
+
+
+def test_a_question_from_a_finished_module_is_not_answerable(client: TestClient):
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    client.patch(
+        f"/practice-tests/attempts/{attempt_id}/progress",
+        json={"current_module_id": modules[1].id},
+    )
+
+    refused = _answer(client, attempt_id, questions[0].id)
+
+    assert refused.status_code == 409
+    assert "revisited" in refused.json()["detail"]
+
+
+def test_a_question_from_a_module_ahead_is_still_answerable(client: TestClient):
+    """The client advances even when the module save fails; that is not a cheat."""
+    db = FakeSession()
+    test, modules, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    ahead = next(q for q in questions if q.module_id == modules[1].id)
+
+    assert _answer(client, attempt_id, ahead.id).status_code == 200
+
+
+# --- attempts that run out of time ------------------------------------------
+
+
+def _strand_on_last_module(db, modules) -> PracticeTestAttempt:
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.current_module_id = modules[-1].id
+    attempt.module_started_at = _utcnow_for_tests() - timedelta(
+        seconds=modules[-1].time_limit_seconds + 60
+    )
+    return attempt
+
+
+def test_reading_an_attempt_whose_last_module_ran_out_scores_it(client: TestClient):
+    db = FakeSession()
+    test, modules, _q = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    _strand_on_last_module(db, modules)
+
+    body = client.get(f"/practice-tests/attempts/{attempt_id}").json()
+
+    assert body["status"] == "completed"
+    assert body["total_scaled"] is not None
+
+
+def test_an_expired_earlier_module_does_not_end_the_test(client: TestClient):
+    db = FakeSession()
+    test, modules, _q = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.module_started_at = _utcnow_for_tests() - timedelta(
+        seconds=modules[0].time_limit_seconds + 600
+    )
+
+    body = client.get(f"/practice-tests/attempts/{attempt_id}").json()
+
+    assert body["status"] == "in_progress"
+    assert body["seconds_remaining"] == 0
+
+
+def test_an_attempt_that_ran_out_does_not_block_a_retake(client: TestClient):
+    db = FakeSession()
+    test, modules, _q = _build(db)
+    _use(db)
+    _as("student")
+    _start(client, test.id)
+    _strand_on_last_module(db, modules)
+
+    again = client.post(f"/practice-tests/{test.id}/attempts")
+
+    assert again.status_code == 200
+
+
 # --- progress ---------------------------------------------------------------
 
 
@@ -328,6 +475,8 @@ def test_moving_to_the_next_module_restarts_the_module_timer(client: TestClient)
     assert response.json()["current_module_id"] == modules[1].id
     assert response.json()["timer_pause_seconds"] == 0
     assert attempt.module_started_at is not None
+    # The new module's clock is the server's answer, not the client's guess.
+    assert response.json()["seconds_remaining"] == modules[1].time_limit_seconds
 
 
 def test_a_finished_module_cannot_be_revisited(client: TestClient):
@@ -344,20 +493,58 @@ def test_a_finished_module_cannot_be_revisited(client: TestClient):
     assert back.status_code == 409
 
 
-def test_pausing_and_resuming_accumulates_paused_seconds(client: TestClient):
+def test_a_short_silence_is_not_an_absence(client: TestClient):
+    """A switched-away tab still reports in, throttled. It must keep counting."""
     db = FakeSession()
     test, _m, _q = _build(db)
     _use(db)
     _as("student")
     attempt_id = _start(client, test.id)
-    url = f"/practice-tests/attempts/{attempt_id}/progress"
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.last_seen_at = _utcnow_for_tests() - timedelta(
+        seconds=AWAY_GRACE_SECONDS - 10
+    )
 
-    paused = client.patch(url, json={"pause_timer": True})
-    assert paused.json()["timer_paused_at"] is not None
+    beat = client.patch(f"/practice-tests/attempts/{attempt_id}/progress", json={})
 
-    resumed = client.patch(url, json={"pause_timer": False})
-    assert resumed.json()["timer_paused_at"] is None
-    assert resumed.json()["timer_pause_seconds"] >= 0
+    assert beat.status_code == 200
+    assert beat.json()["timer_pause_seconds"] == 0
+
+
+def test_a_long_silence_banks_the_time_the_student_was_gone(client: TestClient):
+    """A closed tab reports nothing, and the silence is what stops the clock."""
+    db = FakeSession()
+    test, _m, _q = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.last_seen_at = _utcnow_for_tests() - timedelta(
+        seconds=AWAY_GRACE_SECONDS + 600
+    )
+
+    back = client.patch(f"/practice-tests/attempts/{attempt_id}/progress", json={})
+
+    assert back.status_code == 200
+    # Only the silence past the grace counts, so the ten minutes away, not the
+    # grace that precedes them.
+    assert back.json()["timer_pause_seconds"] == pytest.approx(600, abs=2)
+
+
+def test_the_clock_comes_from_the_server(client: TestClient):
+    db = FakeSession()
+    test, modules, _q = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.module_started_at = _utcnow_for_tests() - timedelta(minutes=10)
+
+    body = client.get(f"/practice-tests/attempts/{attempt_id}").json()
+
+    assert body["seconds_remaining"] == pytest.approx(
+        modules[0].time_limit_seconds - 600, abs=2
+    )
 
 
 def test_progress_is_rejected_once_the_attempt_is_complete(client: TestClient):
@@ -370,7 +557,7 @@ def test_progress_is_rejected_once_the_attempt_is_complete(client: TestClient):
 
     assert client.patch(
         f"/practice-tests/attempts/{attempt_id}/progress",
-        json={"pause_timer": True},
+        json={},
     ).status_code == 409
 
 

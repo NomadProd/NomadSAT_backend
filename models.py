@@ -513,8 +513,18 @@ class PracticeTestAttempt(Base):
         nullable=True,
     )
     module_started_at = Column(DateTime(timezone=True), nullable=True)
+    # Written by the old pause flag; kept only as the record of how attempts
+    # taken before the server owned the clock were timed.
     timer_paused_at = Column(DateTime(timezone=True), nullable=True)
+    # Time the student spent away, which does not count against their module.
     timer_pause_seconds = Column(Integer, nullable=False, default=0, server_default="0")
+    # When the taking screen last reported in. Silence past the grace is the
+    # student having left, and the gap is banked into timer_pause_seconds.
+    last_seen_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
     question_ids = Column(JSONB, nullable=True)
     rw_raw = Column(Integer, nullable=True)
     math_raw = Column(Integer, nullable=True)
