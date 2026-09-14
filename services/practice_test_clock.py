@@ -21,6 +21,15 @@ from datetime import datetime, timezone
 # is what stops its clock.
 AWAY_GRACE_SECONDS = 90
 
+# How long a student may be gone before the attempt is written off.
+#
+# Deliberately generous. The clock stops while they are away, so a student who
+# shuts the laptop at midnight meaning to finish tomorrow is entitled to the
+# time they had left -- abandoning them early would take their answers with it.
+# Past a day, nobody is coming back, and leaving the attempt open locks them out
+# of the test entirely.
+ABANDON_AFTER_SECONDS = 24 * 60 * 60
+
 # Slack on the deadline for an answer, to cover the trip to the server. A
 # grid-in waits 400ms for typing to stop, then the request has to cross a bad
 # connection, so the honest late arrivals are seconds rather than milliseconds.
@@ -88,6 +97,19 @@ def away_seconds(*, last_seen_at: datetime | None, now: datetime) -> int:
         return 0
     gap = int((as_utc(now) - as_utc(last_seen_at)).total_seconds())
     return max(0, gap - AWAY_GRACE_SECONDS)
+
+
+def is_dead(*, last_seen_at: datetime | None, now: datetime) -> bool:
+    """Whether we have heard nothing for long enough to write the attempt off.
+
+    Silence is the only signal there is. An attempt's module cannot expire while
+    the student is away -- the clock stops for them -- so waiting for expiry
+    would wait forever.
+    """
+    if last_seen_at is None:
+        return False
+    gone = (as_utc(now) - as_utc(last_seen_at)).total_seconds()
+    return gone > ABANDON_AFTER_SECONDS
 
 
 def is_expired(

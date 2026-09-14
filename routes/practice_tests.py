@@ -64,6 +64,7 @@ from services.practice_test_config import (
     ANSWER_TYPE_MCQ,
     ANSWER_TYPE_SPR,
     MODULE_FORMAT,
+    STATUS_ABANDONED,
     SECTION_LABELS,
     SECTION_MATH,
     SECTION_READING_WRITING,
@@ -75,6 +76,7 @@ from services.practice_test_config import (
 from services.practice_test_clock import (
     ANSWER_GRACE_SECONDS,
     away_seconds,
+    is_dead,
     is_expired,
     remaining_seconds,
 )
@@ -475,6 +477,66 @@ def list_practice_questions(
     return [serialize_question_admin(question) for question in questions]
 
 
+def _answer_key(question: PracticeTestQuestion) -> tuple:
+    """Everything about a question that decides whether an answer is right."""
+    return (
+        question.answer_type,
+        (question.correct_choice or "").strip().upper(),
+        tuple(_parse_answers(question.correct_answers) or []),
+    )
+
+
+def _regrade_question(db: Session, question: PracticeTestQuestion) -> tuple[int, int]:
+    """Re-mark every stored answer to a question, and re-score what that moves.
+
+    is_correct is decided once, when the answer is submitted, so correcting a
+    typo'd key afterwards would otherwise leave every answer already given
+    marked against the old one -- and the scores derived from them wrong.
+
+    Re-marks with _grade and re-scores with _score_attempt, the same functions
+    the live path uses. Returns (answers re-marked, attempts re-scored).
+    """
+    answers = (
+        db.query(PracticeTestAnswer)
+        .filter(PracticeTestAnswer.question_id == question.id)
+        .all()
+    )
+    touched_attempts: set[int] = set()
+    for answer in answers:
+        graded = _grade(
+            question,
+            PracticeTestAnswerSubmit(
+                question_id=question.id,
+                selected_choice=answer.selected_choice,
+                response_text=answer.response_text,
+            ),
+        )
+        if bool(answer.is_correct) != graded:
+            answer.is_correct = graded
+            touched_attempts.add(answer.attempt_id)
+
+    if not touched_attempts:
+        return 0, 0
+
+    rescored = 0
+    attempts = (
+        db.query(PracticeTestAttempt)
+        .filter(PracticeTestAttempt.id.in_(touched_attempts))
+        .all()
+    )
+    for attempt in attempts:
+        # An attempt still being sat has no score yet; it will be scored from
+        # the corrected answers when the student submits.
+        if attempt.status != STATUS_COMPLETED:
+            continue
+        for field, value in _score_attempt(db, attempt).items():
+            setattr(attempt, field, value)
+        rescored += 1
+
+    db.commit()
+    return len(touched_attempts), rescored
+
+
 @router.put("/practice-tests/questions/{question_id}")
 def update_practice_question(
     question_id: int,
@@ -492,12 +554,23 @@ def update_practice_question(
         )
 
     old_public_id = question.question_image_public_id
+    old_key = _answer_key(question)
     _apply_question_payload(question, data)
     _commit_question(db)
     db.refresh(question)
     if old_public_id and old_public_id != question.question_image_public_id:
         delete_file(old_public_id, "image/jpeg")
-    return serialize_question_admin(question)
+
+    # Only a changed key needs regrading; fixing a typo in the wording does not.
+    regraded = rescored = 0
+    if _answer_key(question) != old_key:
+        regraded, rescored = _regrade_question(db, question)
+
+    payload = serialize_question_admin(question)
+    # So whoever made the edit can see what it moved.
+    payload["regraded_answers"] = regraded
+    payload["rescored_attempts"] = rescored
+    return payload
 
 
 @router.delete("/practice-tests/questions/{question_id}")
@@ -1005,7 +1078,7 @@ def list_my_practice_attempts(
     )
     attempts.sort(key=lambda a: a.id, reverse=True)
     for attempt in attempts:
-        _autocomplete_if_expired(db, attempt)
+        _settle(db, attempt)
     titles = _titles_for(db, [attempt.test_id for attempt in attempts])
     return [
         _serialize_attempt(
@@ -1033,7 +1106,7 @@ def get_practice_attempt(
     _require_review_access(db, attempt, current_user)
     # Resuming a test whose last module ran out while the student was away must
     # land on their score, not drop them back into a module that is over.
-    _autocomplete_if_expired(db, attempt)
+    _settle(db, attempt)
     titles = _titles_for(db, [attempt.test_id])
     return _serialize_attempt(
         attempt,
@@ -1245,6 +1318,41 @@ def _score_and_complete(db: Session, attempt: PracticeTestAttempt) -> bool:
     return bool(updated)
 
 
+def _abandon_if_dead(db: Session, attempt: PracticeTestAttempt) -> None:
+    """Write off an attempt nobody has come back to.
+
+    The sibling of _autocomplete_if_expired, and between them they cover both
+    ways an attempt ends without being submitted: a last module that ran out is
+    a finished test and gets scored, while a student who simply never returned
+    is abandoned and scored not at all.
+
+    Without this an attempt stays in progress for good, and the student is told
+    they already have one running every time they try the test again -- a 409
+    they have no way to clear.
+    """
+    if attempt.status != STATUS_IN_PROGRESS:
+        return
+    if not is_dead(last_seen_at=getattr(attempt, "last_seen_at", None), now=_utcnow()):
+        return
+    updated = (
+        db.query(PracticeTestAttempt)
+        .filter(
+            PracticeTestAttempt.id == attempt.id,
+            PracticeTestAttempt.status == STATUS_IN_PROGRESS,
+        )
+        .update({"status": STATUS_ABANDONED}, synchronize_session=False)
+    )
+    db.commit()
+    if updated:
+        db.refresh(attempt)
+
+
+def _settle(db: Session, attempt: PracticeTestAttempt) -> None:
+    """Close out an attempt that has ended without anyone saying so."""
+    _autocomplete_if_expired(db, attempt)
+    _abandon_if_dead(db, attempt)
+
+
 def _autocomplete_if_expired(db: Session, attempt: PracticeTestAttempt) -> None:
     """Finish an attempt whose LAST module has run out.
 
@@ -1371,9 +1479,10 @@ def create_practice_attempt(
         .first()
     )
     if unfinished is not None:
-        # If that attempt's time is already gone, finish it rather than holding
-        # the student in a 409 they have no way to clear.
-        _autocomplete_if_expired(db, unfinished)
+        # If that attempt has already ended -- its time gone, or the student
+        # never came back -- close it rather than holding them in a 409 they
+        # have no way to clear.
+        _settle(db, unfinished)
     if unfinished is not None and unfinished.status == STATUS_IN_PROGRESS:
         raise HTTPException(
             status_code=409,
@@ -1428,7 +1537,7 @@ def list_practice_attempts_for_test(
         .all()
     )
     for attempt in attempts:
-        _autocomplete_if_expired(db, attempt)
+        _settle(db, attempt)
     attempts = [a for a in attempts if a.status == STATUS_COMPLETED]
     if not is_admin_or_mentor(current_user.role):
         attempts = [

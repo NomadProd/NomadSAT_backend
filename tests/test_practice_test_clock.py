@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from services.practice_test_clock import (
+    ABANDON_AFTER_SECONDS,
     ANSWER_GRACE_SECONDS,
     AWAY_GRACE_SECONDS,
     away_seconds,
+    is_dead,
     is_expired,
     remaining_seconds,
 )
@@ -137,3 +139,24 @@ def test_the_grace_is_not_a_cliff():
 
 def test_an_attempt_never_seen_banks_nothing():
     assert away_seconds(last_seen_at=None, now=NOW) == 0
+
+
+# --- writing off an attempt nobody came back to -----------------------------
+
+
+def test_a_student_who_stepped_away_is_not_written_off():
+    assert is_dead(last_seen_at=NOW - timedelta(hours=2), now=NOW) is False
+
+
+def test_an_overnight_break_is_not_written_off():
+    # The clock stopped for them, so the time they had left is still theirs.
+    assert is_dead(last_seen_at=NOW - timedelta(hours=12), now=NOW) is False
+
+
+def test_silence_past_a_day_writes_the_attempt_off():
+    gone = ABANDON_AFTER_SECONDS + 60
+    assert is_dead(last_seen_at=NOW - timedelta(seconds=gone), now=NOW) is True
+
+
+def test_an_attempt_never_seen_is_left_alone():
+    assert is_dead(last_seen_at=None, now=NOW) is False

@@ -20,7 +20,11 @@ from models import (
     PracticeTestQuestion,
     User,
 )
-from services.practice_test_clock import ANSWER_GRACE_SECONDS, AWAY_GRACE_SECONDS
+from services.practice_test_clock import (
+    ABANDON_AFTER_SECONDS,
+    ANSWER_GRACE_SECONDS,
+    AWAY_GRACE_SECONDS,
+)
 from services.practice_test_config import MODULE_FORMAT, name_modules
 from tests.fake_session import FakeSession as _BaseFakeSession
 
@@ -454,6 +458,77 @@ def test_an_attempt_that_ran_out_does_not_block_a_retake(client: TestClient):
     assert again.status_code == 200
 
 
+# --- attempts nobody came back to -------------------------------------------
+
+
+def _last_seen(db, seconds_ago: int) -> PracticeTestAttempt:
+    attempt = db.store[PracticeTestAttempt][0]
+    attempt.last_seen_at = _utcnow_for_tests() - timedelta(seconds=seconds_ago)
+    return attempt
+
+
+def test_an_attempt_nobody_came_back_to_stops_blocking_the_test(
+    client: TestClient,
+):
+    db = FakeSession()
+    test, _m, _q = _build(db)
+    _use(db)
+    _as("student")
+    _start(client, test.id)
+    _last_seen(db, ABANDON_AFTER_SECONDS + 60)
+
+    again = client.post(f"/practice-tests/{test.id}/attempts")
+
+    assert again.status_code == 200, again.text
+    assert db.store[PracticeTestAttempt][0].status == "abandoned"
+
+
+def test_a_student_coming_back_the_same_day_keeps_their_attempt(
+    client: TestClient,
+):
+    """The clock stopped while they were away; the attempt is still theirs."""
+    db = FakeSession()
+    test, _m, _q = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    _last_seen(db, 12 * 60 * 60)
+
+    blocked = client.post(f"/practice-tests/{test.id}/attempts")
+
+    assert blocked.status_code == 409
+    body = client.get(f"/practice-tests/attempts/{attempt_id}").json()
+    assert body["status"] == "in_progress"
+
+
+def test_an_abandoned_attempt_is_not_scored(client: TestClient):
+    db = FakeSession()
+    test, _m, _q = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    _last_seen(db, ABANDON_AFTER_SECONDS + 60)
+
+    body = client.get(f"/practice-tests/attempts/{attempt_id}").json()
+
+    assert body["status"] == "abandoned"
+    assert body["total_scaled"] is None
+
+
+def test_an_abandoned_attempt_is_not_a_result_for_staff(client: TestClient):
+    db = FakeSession()
+    test, _m, _q = _build(db)
+    _use(db)
+    _as("student")
+    _start(client, test.id)
+    _last_seen(db, ABANDON_AFTER_SECONDS + 60)
+
+    _as("admin")
+    rows = client.get(f"/practice-tests/{test.id}/attempts").json()
+
+    assert rows == []
+
+
 # --- progress ---------------------------------------------------------------
 
 
@@ -559,6 +634,111 @@ def test_progress_is_rejected_once_the_attempt_is_complete(client: TestClient):
         f"/practice-tests/attempts/{attempt_id}/progress",
         json={},
     ).status_code == 409
+
+
+# --- fixing a question after it has been answered ---------------------------
+
+
+def _question_payload(question, **overrides) -> dict:
+    payload = {
+        "order_index": question.order_index,
+        "domain": question.domain,
+        "difficulty": question.difficulty,
+        "question_text": question.question_text,
+        "answer_type": question.answer_type,
+        "choices": [dict(choice) for choice in question.choices],
+        "correct_choice": question.correct_choice,
+        "explanation": question.explanation,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _answered_and_submitted(client: TestClient, db) -> tuple:
+    """A student answers the first question 'B' and submits."""
+    test, _m, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    client.post(
+        f"/practice-tests/attempts/{attempt_id}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "B"},
+    )
+    client.post(f"/practice-tests/attempts/{attempt_id}/complete")
+    return attempt_id, questions[0]
+
+
+def test_correcting_a_key_regrades_the_answers_already_given(client: TestClient):
+    db = FakeSession()
+    attempt_id, question = _answered_and_submitted(client, db)
+    answer = db.store[PracticeTestAnswer][0]
+    assert answer.is_correct is True  # 'B' was the key when they answered
+
+    _as("admin")
+    response = client.put(
+        f"/practice-tests/questions/{question.id}",
+        json=_question_payload(question, correct_choice="C"),
+    )
+
+    assert response.status_code == 200, response.text
+    assert answer.is_correct is False
+    assert response.json()["regraded_answers"] == 1
+
+
+def test_correcting_a_key_moves_the_score_it_produced(client: TestClient):
+    db = FakeSession()
+    attempt_id, question = _answered_and_submitted(client, db)
+    attempt = db.store[PracticeTestAttempt][0]
+    before = attempt.total_scaled
+
+    _as("admin")
+    response = client.put(
+        f"/practice-tests/questions/{question.id}",
+        json=_question_payload(question, correct_choice="C"),
+    )
+
+    assert response.json()["rescored_attempts"] == 1
+    assert attempt.total_scaled != before, (
+        "a completed attempt must not keep a score built on the old key"
+    )
+
+
+def test_editing_the_wording_regrades_nothing(client: TestClient):
+    db = FakeSession()
+    _attempt_id, question = _answered_and_submitted(client, db)
+    answer = db.store[PracticeTestAnswer][0]
+
+    _as("admin")
+    response = client.put(
+        f"/practice-tests/questions/{question.id}",
+        json=_question_payload(question, question_text="Reworded stem"),
+    )
+
+    assert response.json()["regraded_answers"] == 0
+    assert answer.is_correct is True
+
+
+def test_an_unfinished_attempt_is_regraded_but_not_scored(client: TestClient):
+    db = FakeSession()
+    test, _m, questions = _build(db)
+    _use(db)
+    _as("student")
+    attempt_id = _start(client, test.id)
+    client.post(
+        f"/practice-tests/attempts/{attempt_id}/answers",
+        json={"question_id": questions[0].id, "selected_choice": "B"},
+    )
+
+    _as("admin")
+    response = client.put(
+        f"/practice-tests/questions/{questions[0].id}",
+        json=_question_payload(questions[0], correct_choice="C"),
+    )
+
+    assert response.json()["regraded_answers"] == 1
+    assert response.json()["rescored_attempts"] == 0
+    assert db.store[PracticeTestAnswer][0].is_correct is False
+    assert db.store[PracticeTestAttempt][0].total_scaled is None
 
 
 # --- completing -------------------------------------------------------------
