@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -370,7 +371,8 @@ async def upload_session_mock_document(
         return validation
 
     old_document = read_homework_document(session_obj.mock_document)
-    uploaded = upload_mock_document(
+    uploaded = await run_in_threadpool(
+        upload_mock_document,
         file_bytes,
         session_id=session_obj.id,
         filename=filename,
@@ -394,7 +396,7 @@ async def upload_session_mock_document(
     except Exception:
         db.rollback()
         session_obj.mock_document = old_document
-        delete_raw_file(str(uploaded["public_id"]))
+        await run_in_threadpool(delete_raw_file, str(uploaded["public_id"]))
         logger.error(
             "Failed to save mock_document for session_id=%s",
             session_id,
@@ -407,7 +409,7 @@ async def upload_session_mock_document(
 
     old_public_id = (old_document or {}).get("public_id")
     if old_public_id and old_public_id != uploaded["public_id"]:
-        delete_raw_file(str(old_public_id))
+        await run_in_threadpool(delete_raw_file, str(old_public_id))
 
     return {
         "session_id": session_obj.id,

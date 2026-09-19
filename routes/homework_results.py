@@ -6,6 +6,7 @@ from urllib.parse import unquote
 import mimetypes
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
@@ -386,7 +387,8 @@ async def upload_homework_result_files(
     try:
         for item in validation:
             uploaded_cloudinary.append(
-                upload_file(
+                await run_in_threadpool(
+                    upload_file,
                     item["bytes"],
                     result_id=result_id,
                     filename=item["filename"],
@@ -394,10 +396,10 @@ async def upload_homework_result_files(
                 )
             )
     except HTTPException:
-        rollback_uploads(uploaded_cloudinary)
+        await run_in_threadpool(rollback_uploads, uploaded_cloudinary)
         raise
     except Exception:
-        rollback_uploads(uploaded_cloudinary)
+        await run_in_threadpool(rollback_uploads, uploaded_cloudinary)
         raise HTTPException(status_code=500, detail="Upload failed, rolled back")
 
     try:
@@ -414,7 +416,7 @@ async def upload_homework_result_files(
         db.refresh(result)
     except Exception:
         db.rollback()
-        rollback_uploads(uploaded_cloudinary)
+        await run_in_threadpool(rollback_uploads, uploaded_cloudinary)
         raise HTTPException(status_code=500, detail="Upload failed, rolled back")
 
     return serialize_upload_response(result)

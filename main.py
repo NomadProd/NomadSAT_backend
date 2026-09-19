@@ -1,7 +1,17 @@
+import logging
+import time
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from config import env_list
+from config import env, env_list
+
+logger = logging.getLogger(__name__)
+
+# Render's latency metric is empty for this service and uvicorn's access log
+# carries no duration, so slow endpoints are invisible in production. Log any
+# request past the threshold; SLOW_REQUEST_SECONDS tunes it without a deploy.
+SLOW_REQUEST_SECONDS = float(env("SLOW_REQUEST_SECONDS", "0.5"))
 
 from routers import (
     auth_router,
@@ -35,8 +45,25 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed = time.perf_counter() - started
+    if elapsed >= SLOW_REQUEST_SECONDS:
+        logger.warning(
+            "SLOW %.3fs %s %s -> %s",
+            elapsed, request.method, request.url.path, response.status_code,
+        )
+    response.headers["X-Response-Time"] = f"{elapsed:.3f}"
+    return response
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    # Without this the 500 is returned with the traceback discarded, which is
+    # why production 500s leave no trace in the logs at all.
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     origin = request.headers.get("origin", "")
     headers = {}
     if origin:

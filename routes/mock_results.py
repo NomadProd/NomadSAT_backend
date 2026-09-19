@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -110,7 +111,8 @@ async def upload_mock_result_files(
     try:
         for item in validation:
             uploaded_cloudinary.append(
-                upload_file(
+                await run_in_threadpool(
+                    upload_file,
                     item["bytes"],
                     result_id=result_id,
                     filename=item["filename"],
@@ -121,11 +123,15 @@ async def upload_mock_result_files(
             )
     except HTTPException:
         for uploaded in uploaded_cloudinary:
-            delete_file(uploaded["public_id"], uploaded["content_type"])
+            await run_in_threadpool(
+                delete_file, uploaded["public_id"], uploaded["content_type"]
+            )
         raise
     except Exception:
         for uploaded in uploaded_cloudinary:
-            delete_file(uploaded["public_id"], uploaded["content_type"])
+            await run_in_threadpool(
+                delete_file, uploaded["public_id"], uploaded["content_type"]
+            )
         raise HTTPException(status_code=500, detail="Upload failed, all files rolled back")
 
     try:
@@ -140,7 +146,9 @@ async def upload_mock_result_files(
     except Exception:
         db.rollback()
         for uploaded in uploaded_cloudinary:
-            delete_file(uploaded["public_id"], uploaded["content_type"])
+            await run_in_threadpool(
+                delete_file, uploaded["public_id"], uploaded["content_type"]
+            )
         raise HTTPException(status_code=500, detail="Upload failed, all files rolled back")
 
     return serialize_mock_result(result)

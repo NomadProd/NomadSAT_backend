@@ -29,11 +29,17 @@ if ssl_mode in {"require", "verify-ca", "verify-full"}:
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
 
+# Supabase's session pooler is remote, so every new connection costs a TLS
+# handshake plus an auth round trip. Recycle every 30 min rather than every 5,
+# and fail fast instead of hanging 30s when the pool is drained.
 engine = create_engine(
     DATABASE_URL,
     connect_args=connect_args,
     pool_pre_ping=True,
-    pool_recycle=300,
+    pool_recycle=1800,
+    pool_size=5,
+    max_overflow=10,
+    pool_timeout=10,
 )
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 

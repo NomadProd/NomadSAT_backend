@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -551,7 +552,8 @@ async def upload_diagnostic_question_image(
         raise HTTPException(status_code=422, detail="The image file is empty")
     if len(payload) > MAX_QUESTION_IMAGE_BYTES:
         raise HTTPException(status_code=422, detail="File size cannot exceed 10mb")
-    uploaded = upload_file(
+    uploaded = await run_in_threadpool(
+        upload_file,
         payload,
         result_id=current_user.id,
         filename=filename,

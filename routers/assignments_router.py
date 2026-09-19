@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -721,7 +722,8 @@ async def upload_assignment_homework_document(
         return validation
 
     old_document = read_homework_document(assignment.homework_document)
-    uploaded = upload_homework_document(
+    uploaded = await run_in_threadpool(
+        upload_homework_document,
         file_bytes,
         assignment_id=assignment.id,
         filename=filename,
@@ -744,7 +746,7 @@ async def upload_assignment_homework_document(
     except Exception:
         db.rollback()
         assignment.homework_document = old_document
-        delete_raw_file(str(uploaded["public_id"]))
+        await run_in_threadpool(delete_raw_file, str(uploaded["public_id"]))
         logger.error(
             "Failed to save homework_document for assignment_id=%s",
             assignment_id,
@@ -757,7 +759,7 @@ async def upload_assignment_homework_document(
 
     old_public_id = (old_document or {}).get("public_id")
     if old_public_id and old_public_id != uploaded["public_id"]:
-        delete_raw_file(str(old_public_id))
+        await run_in_threadpool(delete_raw_file, str(old_public_id))
 
     return {
         "assignment_id": assignment.id,
