@@ -5,7 +5,9 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from services.diagnostic_config import layout_mismatch_message
+from services.diagnostic_config import SECTION_MATH, layout_mismatch_message
+from services.practice_test_config import ANSWER_TYPE_MCQ, ANSWER_TYPES
+from services.practice_test_scoring import is_valid_grid_in
 
 
 class ChoiceSchema(BaseModel):
@@ -59,11 +61,13 @@ class DiagnosticQuestionCreate(BaseModel):
     question_image: Optional[str] = None
     question_image_public_id: Optional[str] = None
     image_scale: float = Field(default=0.85, ge=0.4, le=1.0)
-    choices: list[ChoiceSchema]
-    correct_choice: str
+    answer_type: str = ANSWER_TYPE_MCQ
+    choices: Optional[list[ChoiceSchema]] = None
+    correct_choice: Optional[str] = None
+    correct_answers: Optional[list[str]] = None
     explanation: Optional[str] = None
 
-    @field_validator("section", "difficulty")
+    @field_validator("section", "difficulty", "answer_type")
     @classmethod
     def normalize_lower(cls, value: str) -> str:
         return (value or "").strip().lower()
@@ -78,11 +82,17 @@ class DiagnosticQuestionCreate(BaseModel):
 
     @field_validator("correct_choice")
     @classmethod
-    def normalize_correct_choice(cls, value: str) -> str:
-        choice = (value or "").strip().upper()
-        if not choice:
-            raise ValueError("correct_choice is required")
-        return choice
+    def normalize_correct_choice(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip().upper() or None
+
+    @field_validator("correct_answers")
+    @classmethod
+    def strip_answers(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        return [str(item).strip() for item in value if str(item).strip()]
 
     @field_validator("question_url", "question_image", "question_image_public_id", "passage_text", "explanation")
     @classmethod
@@ -91,16 +101,6 @@ class DiagnosticQuestionCreate(BaseModel):
             return None
         text = value.strip()
         return text or None
-
-    @field_validator("choices")
-    @classmethod
-    def require_choices(cls, value: list[ChoiceSchema]) -> list[ChoiceSchema]:
-        if len(value) < 2:
-            raise ValueError("at least two choices are required")
-        keys = [choice.key for choice in value]
-        if len(set(keys)) != len(keys):
-            raise ValueError("choice keys must be unique")
-        return value
 
     @model_validator(mode="after")
     def validate_layout_and_answer(self) -> "DiagnosticQuestionCreate":
@@ -111,9 +111,38 @@ class DiagnosticQuestionCreate(BaseModel):
             difficulty=self.difficulty,
             points=self.points,
         )
-        keys = {choice.key for choice in self.choices}
-        if self.correct_choice not in keys:
-            raise ValueError("correct_choice must match one of the choice keys")
+        if self.answer_type not in ANSWER_TYPES:
+            raise ValueError(f"answer_type must be one of {', '.join(ANSWER_TYPES)}")
+
+        # Same answer-shape rules as PracticeTestQuestionCreate.
+        if self.answer_type == ANSWER_TYPE_MCQ:
+            if self.correct_answers:
+                raise ValueError("correct_answers is only for grid-in questions")
+            if not self.choices or len(self.choices) < 2:
+                raise ValueError("at least two choices are required")
+            keys = [choice.key for choice in self.choices]
+            if len(set(keys)) != len(keys):
+                raise ValueError("choice keys must be unique")
+            if not self.correct_choice:
+                raise ValueError("correct_choice is required")
+            if self.correct_choice not in set(keys):
+                raise ValueError("correct_choice must match one of the choice keys")
+            self.correct_answers = None
+        else:
+            if self.section != SECTION_MATH:
+                raise ValueError("grid-in questions are only allowed in the math section")
+            if self.choices or self.correct_choice:
+                raise ValueError("grid-in questions cannot have choices")
+            if not self.correct_answers:
+                raise ValueError("at least one correct answer is required")
+            unusable = [a for a in self.correct_answers if not is_valid_grid_in(a)]
+            if unusable:
+                raise ValueError(
+                    "these answers cannot be typed into the grid-in field: "
+                    + ", ".join(unusable)
+                )
+            self.choices = None
+            self.correct_choice = None
         return self
 
 
@@ -136,8 +165,10 @@ class DiagnosticQuestionAdminSchema(BaseModel):
     question_image: Optional[str] = None
     question_image_public_id: Optional[str] = None
     image_scale: float = 0.85
+    answer_type: str = ANSWER_TYPE_MCQ
     choices: list[ChoiceSchema]
-    correct_choice: str
+    correct_choice: Optional[str] = None
+    correct_answers: Optional[list[str]] = None
     explanation: Optional[str] = None
     created_at: datetime
     created_by_id: Optional[int] = None
@@ -155,12 +186,15 @@ class DiagnosticQuestionPublicSchema(BaseModel):
     question_text: str
     question_image: Optional[str] = None
     image_scale: float = 0.85
+    answer_type: str = ANSWER_TYPE_MCQ
     choices: list[ChoiceSchema]
 
 
 class DiagnosticAnswerSubmit(BaseModel):
     question_id: int
-    selected_choice: str
+    selected_choice: Optional[str] = None
+    # Grid-in input. Empty or blank clears the answer.
+    response_text: Optional[str] = None
     is_correct: Optional[bool] = Field(
         default=None,
         description="Ignored if present. is_correct is always computed server-side.",
@@ -168,16 +202,23 @@ class DiagnosticAnswerSubmit(BaseModel):
 
     @field_validator("selected_choice")
     @classmethod
-    def normalize_selected_choice(cls, value: str) -> str:
-        choice = (value or "").strip().upper()
-        if not choice:
-            raise ValueError("selected_choice is required")
-        return choice
+    def normalize_selected_choice(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip().upper() or None
+
+    @field_validator("response_text")
+    @classmethod
+    def strip_response(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip()
 
 
 class DiagnosticAnswerSchema(BaseModel):
     question_id: int
     selected_choice: Optional[str] = None
+    response_text: Optional[str] = None
     answered_at: Optional[datetime] = None
     is_correct: Optional[bool] = None
 
@@ -246,9 +287,12 @@ class DiagnosticAnswerReviewSchema(BaseModel):
     passage_text: Optional[str] = None
     question_image: Optional[str] = None
     image_scale: float = 0.85
+    answer_type: str = ANSWER_TYPE_MCQ
     choices: list[ChoiceSchema]
     selected_choice: Optional[str] = None
-    correct_choice: str
+    response_text: Optional[str] = None
+    correct_choice: Optional[str] = None
+    correct_answers: Optional[list[str]] = None
     is_correct: Optional[bool] = None
     explanation: Optional[str] = None
 

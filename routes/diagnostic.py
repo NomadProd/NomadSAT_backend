@@ -61,6 +61,8 @@ from services.diagnostic_config import (
     STATUS_IN_PROGRESS,
 )
 from services.diagnostic_scoring import estimate_result
+from services.practice_test_config import ANSWER_TYPE_MCQ, ANSWER_TYPE_SPR
+from services.practice_test_scoring import spr_is_correct
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +91,13 @@ def _lookup_answer(
 def _apply_answer(
     answer: DiagnosticAnswer,
     *,
-    selected_choice: str,
+    selected_choice: str | None,
+    response_text: str | None,
     is_correct: bool,
     answered_at: datetime,
 ) -> None:
     answer.selected_choice = selected_choice
+    answer.response_text = response_text
     answer.is_correct = is_correct
     answer.answered_at = answered_at
 
@@ -103,7 +107,8 @@ def _upsert_diagnostic_answer(
     *,
     attempt_id: int,
     question_id: int,
-    selected_choice: str,
+    selected_choice: str | None,
+    response_text: str | None,
     is_correct: bool,
     answered_at: datetime,
 ) -> DiagnosticAnswer:
@@ -117,6 +122,7 @@ def _upsert_diagnostic_answer(
     _apply_answer(
         answer,
         selected_choice=selected_choice,
+        response_text=response_text,
         is_correct=is_correct,
         answered_at=answered_at,
     )
@@ -130,6 +136,7 @@ def _upsert_diagnostic_answer(
         _apply_answer(
             answer,
             selected_choice=selected_choice,
+            response_text=response_text,
             is_correct=is_correct,
             answered_at=answered_at,
         )
@@ -148,6 +155,16 @@ def _parse_choices(raw) -> list[ChoiceSchema]:
     if not isinstance(raw, list):
         return []
     return [ChoiceSchema.model_validate(item) for item in raw]
+
+
+def _answer_type(question: DiagnosticQuestion) -> str:
+    return question.answer_type or ANSWER_TYPE_MCQ
+
+
+def _parse_answers(raw) -> list[str] | None:
+    if not isinstance(raw, list) or not raw:
+        return None
+    return [str(item) for item in raw]
 
 
 def _resolved_image_scale(question: DiagnosticQuestion) -> float:
@@ -171,8 +188,10 @@ def serialize_question_admin(question: DiagnosticQuestion) -> dict:
         question_image=question.question_image,
         question_image_public_id=question.question_image_public_id,
         image_scale=_resolved_image_scale(question),
+        answer_type=_answer_type(question),
         choices=_parse_choices(question.choices),
         correct_choice=question.correct_choice,
+        correct_answers=_parse_answers(question.correct_answers),
         explanation=question.explanation,
         created_at=question.created_at,
         created_by_id=question.created_by_id,
@@ -191,6 +210,7 @@ def serialize_question_public(question: DiagnosticQuestion) -> dict:
         question_text=question.question_text,
         question_image=question.question_image,
         image_scale=_resolved_image_scale(question),
+        answer_type=_answer_type(question),
         choices=_parse_choices(question.choices),
     )
     return payload.model_dump(mode="json")
@@ -223,6 +243,7 @@ def serialize_attempt(
             DiagnosticAnswerSchema(
                 question_id=answer.question_id,
                 selected_choice=answer.selected_choice,
+                response_text=answer.response_text,
                 answered_at=answer.answered_at,
                 is_correct=answer.is_correct if include_correctness else None,
             )
@@ -347,6 +368,7 @@ def serialize_attempt_detail(
     for question in questions:
         answer = answers_by_question.get(question.id)
         selected = answer.selected_choice if answer is not None else None
+        response_text = answer.response_text if answer is not None else None
         is_correct = answer.is_correct if answer is not None else None
         explanation = (question.explanation or "").strip() or None
         review_answers.append(
@@ -360,9 +382,12 @@ def serialize_attempt_detail(
                 passage_text=question.passage_text,
                 question_image=question.question_image,
                 image_scale=_resolved_image_scale(question),
+                answer_type=_answer_type(question),
                 choices=_parse_choices(question.choices),
                 selected_choice=selected,
+                response_text=response_text,
                 correct_choice=question.correct_choice,
+                correct_answers=_parse_answers(question.correct_answers),
                 is_correct=is_correct,
                 explanation=explanation,
             )
@@ -417,8 +442,14 @@ def _question_from_payload(
     question.question_image = data.question_image
     question.question_image_public_id = data.question_image_public_id
     question.image_scale = data.image_scale
-    question.choices = [choice.model_dump() for choice in data.choices]
+    question.answer_type = data.answer_type
+    question.choices = (
+        [choice.model_dump() for choice in data.choices]
+        if data.choices is not None
+        else None
+    )
     question.correct_choice = data.correct_choice
+    question.correct_answers = data.correct_answers
     question.explanation = data.explanation
     if existing is None:
         question.created_at = _utcnow()
@@ -614,6 +645,21 @@ def update_diagnostic_question(
             status_code=409,
             detail="A question with this URL already exists",
         )
+    if data.answer_type != _answer_type(question):
+        has_answers = (
+            db.query(DiagnosticAnswer)
+            .filter(DiagnosticAnswer.question_id == question.id)
+            .first()
+            is not None
+        )
+        if has_answers:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Students have already answered this question, so its answer "
+                    "type cannot change. Delete it and create a new one instead."
+                ),
+            )
     old_public_id = question.question_image_public_id
     _question_from_payload(
         data,
@@ -890,19 +936,53 @@ def submit_diagnostic_answer(
     if not _question_belongs_to_attempt(attempt, question.id):
         raise HTTPException(status_code=404, detail="Diagnostic question not found")
 
-    is_correct = data.selected_choice == (question.correct_choice or "").strip().upper()
+    if _answer_type(question) == ANSWER_TYPE_SPR:
+        if data.selected_choice is not None:
+            raise HTTPException(
+                status_code=422, detail="This question expects a typed answer"
+            )
+        if not data.response_text:
+            # An emptied grid-in field means unanswered, not wrong.
+            existing = _lookup_answer(
+                db, attempt_id=attempt_id, question_id=question.id
+            )
+            if existing is not None:
+                db.delete(existing)
+                db.commit()
+            return {
+                "question_id": question.id,
+                "selected_choice": None,
+                "response_text": None,
+                "answered_at": None,
+            }
+        is_correct = spr_is_correct(
+            data.response_text, _parse_answers(question.correct_answers) or []
+        )
+    else:
+        if data.response_text is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="This question expects a multiple-choice answer",
+            )
+        if not data.selected_choice:
+            raise HTTPException(status_code=422, detail="selected_choice is required")
+        is_correct = (
+            data.selected_choice == (question.correct_choice or "").strip().upper()
+        )
     now = _utcnow()
     answer = _upsert_diagnostic_answer(
         db,
         attempt_id=attempt_id,
         question_id=data.question_id,
         selected_choice=data.selected_choice,
+        response_text=data.response_text,
         is_correct=is_correct,
         answered_at=now,
     )
     return {
         "question_id": answer.question_id,
         "selected_choice": answer.selected_choice,
+        "response_text": answer.response_text,
         "answered_at": answer.answered_at,
     }
 

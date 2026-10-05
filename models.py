@@ -272,8 +272,12 @@ class DiagnosticQuestion(Base):
     question_image = Column(Text, nullable=True)
     question_image_public_id = Column(Text, nullable=True)
     image_scale = Column(Float, nullable=False, default=0.85, server_default="0.85")
-    choices = Column(JSONB, nullable=False)
-    correct_choice = Column(String, nullable=False)
+    answer_type = Column(String, nullable=False, default="mcq", server_default="mcq")
+    # none_as_null: ck_diagnostic_questions_answer_shape tests IS NULL on the
+    # unused column, same as PracticeTestQuestion.
+    choices = Column(JSONB(none_as_null=True), nullable=True)
+    correct_choice = Column(String, nullable=True)
+    correct_answers = Column(JSONB(none_as_null=True), nullable=True)
     explanation = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_by_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
@@ -350,6 +354,7 @@ class DiagnosticAnswer(Base):
     )
     question_id = Column(BigInteger, ForeignKey("diagnostic_questions.id"), nullable=False)
     selected_choice = Column(String, nullable=True)
+    response_text = Column(Text, nullable=True)
     is_correct = Column(Boolean, nullable=True)
     answered_at = Column(DateTime(timezone=True), nullable=True)
 

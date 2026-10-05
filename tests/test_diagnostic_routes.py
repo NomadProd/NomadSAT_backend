@@ -970,3 +970,130 @@ def test_unscoped_attempts_list_returns_own_rows_for_admin(client: TestClient):
     body = response.json()
     assert [item["id"] for item in body] == [own.id]
     assert body[0]["student_id"] == 1
+
+
+def _make_grid_in(question: DiagnosticQuestion, answers: list[str]) -> None:
+    question.answer_type = "spr"
+    question.choices = None
+    question.correct_choice = None
+    question.correct_answers = answers
+
+
+def _in_progress_attempt(db: FakeSession, student_id: int = 7) -> DiagnosticAttempt:
+    attempt = DiagnosticAttempt(
+        student_id=student_id,
+        started_at=_utcnow(),
+        status="in_progress",
+    )
+    db.add(attempt)
+    return attempt
+
+
+def test_grid_in_answer_is_graded_with_sat_rules(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db)
+    math_question = questions[10]
+    _make_grid_in(math_question, ["2/3"])
+    attempt = _in_progress_attempt(db)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    url = f"/diagnostic/attempts/{attempt.id}/answers"
+    right = client.post(url, json={"question_id": math_question.id, "response_text": ".6667"})
+    assert right.status_code == 200
+    assert right.json()["response_text"] == ".6667"
+    assert db.store[DiagnosticAnswer][0].is_correct is True
+
+    wrong = client.post(url, json={"question_id": math_question.id, "response_text": ".66"})
+    assert wrong.status_code == 200
+    answers = db.store[DiagnosticAnswer]
+    assert len(answers) == 1
+    assert answers[0].is_correct is False
+
+    choice = client.post(url, json={"question_id": math_question.id, "selected_choice": "B"})
+    assert choice.status_code == 422
+
+
+def test_emptied_grid_in_answer_is_unanswered(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db)
+    math_question = questions[10]
+    _make_grid_in(math_question, ["5"])
+    attempt = _in_progress_attempt(db)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    url = f"/diagnostic/attempts/{attempt.id}/answers"
+    client.post(url, json={"question_id": math_question.id, "response_text": "5"})
+    assert len(db.store[DiagnosticAnswer]) == 1
+
+    cleared = client.post(url, json={"question_id": math_question.id, "response_text": "  "})
+    assert cleared.status_code == 200
+    assert cleared.json()["answered_at"] is None
+    assert db.store[DiagnosticAnswer] == []
+
+
+def test_complete_attempt_scores_grid_in_points(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db)
+    math_question = questions[19]
+    _make_grid_in(math_question, ["7/2"])
+    attempt = _in_progress_attempt(db)
+    _override_db(db)
+    _override_user("student", user_id=7)
+
+    client.post(
+        f"/diagnostic/attempts/{attempt.id}/answers",
+        json={"question_id": math_question.id, "response_text": "3.5"},
+    )
+    response = client.post(f"/diagnostic/attempts/{attempt.id}/complete")
+    assert response.status_code == 200
+    assert response.json()["math_points"] == math_question.points
+    assert response.json()["rw_points"] == 0
+
+
+def test_answer_type_change_refused_once_answered(client: TestClient):
+    db = FakeSession()
+    questions = _seed_questions(db)
+    math_question = questions[10]
+    attempt = _in_progress_attempt(db)
+    db.add(
+        DiagnosticAnswer(
+            attempt_id=attempt.id,
+            question_id=math_question.id,
+            selected_choice="B",
+            is_correct=True,
+            answered_at=_utcnow(),
+        )
+    )
+    _override_db(db)
+    _override_user("admin")
+
+    grid_in = _question_payload(
+        11, choices=None, correct_choice=None, answer_type="spr", correct_answers=["4"]
+    )
+    response = client.put(f"/diagnostic/questions/{math_question.id}", json=grid_in)
+    assert response.status_code == 409
+
+    unanswered = questions[11]
+    response = client.put(
+        f"/diagnostic/questions/{unanswered.id}",
+        json={**grid_in, "order_index": 12, "domain": QUESTION_LAYOUT[12].domain},
+    )
+    assert response.status_code == 200
+    assert response.json()["answer_type"] == "spr"
+    assert response.json()["correct_answers"] == ["4"]
+
+
+def test_grid_in_refused_outside_math(client: TestClient):
+    db = FakeSession()
+    _override_db(db)
+    _override_user("admin")
+
+    response = client.post(
+        "/diagnostic/questions",
+        json=_question_payload(
+            1, choices=None, correct_choice=None, answer_type="spr", correct_answers=["4"]
+        ),
+    )
+    assert response.status_code == 422
